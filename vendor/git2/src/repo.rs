@@ -811,7 +811,7 @@ impl Repository {
 
     /// Make the repository HEAD directly point to the commit.
     ///
-    /// If the provided committish cannot be found in the repository, the HEAD
+    /// If the provided commitish cannot be found in the repository, the HEAD
     /// is unaltered and an error is returned.
     ///
     /// If the provided commitish cannot be peeled into a commit, the HEAD is
@@ -831,7 +831,7 @@ impl Repository {
 
     /// Make the repository HEAD directly point to the commit.
     ///
-    /// If the provided committish cannot be found in the repository, the HEAD
+    /// If the provided commitish cannot be found in the repository, the HEAD
     /// is unaltered and an error is returned.
     /// If the provided commitish cannot be peeled into a commit, the HEAD is
     /// unaltered and an error is returned.
@@ -1815,6 +1815,38 @@ impl Repository {
                 force
             ));
             Ok(Binding::from_raw(&raw as *const _))
+        }
+    }
+
+    /// Create a new tag in the repository from an object without creating a reference.
+    ///
+    /// The message will not be cleaned up.
+    ///
+    /// The tag name will be checked for validity. You must avoid the characters
+    /// '~', '^', ':', ' \ ', '?', '[', and '*', and the sequences ".." and " @
+    /// {" which have special meaning to revparse.
+    pub fn tag_annotation_create(
+        &self,
+        name: &str,
+        target: &Object<'_>,
+        tagger: &Signature<'_>,
+        message: &str,
+    ) -> Result<Oid, Error> {
+        let name = CString::new(name)?;
+        let message = CString::new(message)?;
+        let mut raw_oid = raw::git_oid {
+            id: [0; raw::GIT_OID_RAWSZ],
+        };
+        unsafe {
+            try_call!(raw::git_tag_annotation_create(
+                &mut raw_oid,
+                self.raw,
+                name,
+                target.raw(),
+                tagger.raw(),
+                message
+            ));
+            Ok(Binding::from_raw(&raw_oid as *const _))
         }
     }
 

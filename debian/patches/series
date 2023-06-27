@@ -1,12 +1,15 @@
 2002_disable-net-tests.patch
+2003-workaround-qemu-vfork-command-not-found.patch
 
-# These patches are needed to make this crate work with libgit2 1.1.0
-# which is what is in Debian; by contrast the upstream crate at this version
-# wants libgit2 1.3.0, and segfaults with libgit2 1.1.0 without this patch
-2001-Revert-add-bindings-for-git_branch_name_is_valid-715.patch
-2002-Revert-Bump-libgit2-submodule-to-1.2.0-744.patch
+2200-workaround-x32-test.patch
+disable-fs-specific-test.patch
+0003-tests-add-missing-cross-disabled-checks.patch
 
-2110-use-mfpu-on-armhf.patch
-2111-curl-no-rebuild.patch
-
-2112-handle-4-siphasher-algorithms.patch
+cve/CVE-2022-46176-01-validate-ssh-host.keys.patch
+cve/CVE-2022-46176-02-add-support-for-deserializing-vec-value-string.patch
+cve/CVE-2022-46176-03-support-configuring-ssh-known-hosts.patch
+cve/CVE-2022-46176-04-add-some-known-hosts-tests-and-fix-comma-bug.patch
+cve/CVE-2022-46176-05-remove-let-else.patch
+cve/CVE-2022-46176-06-add-test-for-config-value-in-toml-array.patch
+cve/CVE-2022-46176-07-support-hashed-hostnames.patch
+cve/CVE-2022-46176-08-eliminate-let-else.patch

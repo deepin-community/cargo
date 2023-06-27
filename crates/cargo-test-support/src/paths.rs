@@ -198,14 +198,6 @@ impl CargoPathExt for Path {
     }
 }
 
-// Replace with std implementation when stabilized, see
-// https://github.com/rust-lang/rust/issues/85748
-pub fn is_symlink(path: &Path) -> bool {
-    fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-}
-
 fn do_op<F>(path: &Path, desc: &str, mut f: F)
 where
     F: FnMut(&Path) -> io::Result<()>,
@@ -294,4 +286,62 @@ pub fn sysroot() -> String {
     assert!(output.status.success());
     let sysroot = String::from_utf8(output.stdout).unwrap();
     sysroot.trim().to_string()
+}
+
+/// Returns true if names such as aux.* are allowed.
+///
+/// Traditionally, Windows did not allow a set of file names (see `is_windows_reserved`
+/// for a list). More recent versions of Windows have relaxed this restriction. This test
+/// determines whether we are running in a mode that allows Windows reserved names.
+#[cfg(windows)]
+pub fn windows_reserved_names_are_allowed() -> bool {
+    use cargo_util::is_ci;
+
+    // Ensure tests still run in CI until we need to migrate.
+    if is_ci() {
+        return false;
+    }
+
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use winapi::um::fileapi::GetFullPathNameW;
+
+    let test_file_name: Vec<_> = OsStr::new("aux.rs").encode_wide().collect();
+
+    let buffer_length =
+        unsafe { GetFullPathNameW(test_file_name.as_ptr(), 0, ptr::null_mut(), ptr::null_mut()) };
+
+    if buffer_length == 0 {
+        // This means the call failed, so we'll conservatively assume reserved names are not allowed.
+        return false;
+    }
+
+    let mut buffer = vec![0u16; buffer_length as usize];
+
+    let result = unsafe {
+        GetFullPathNameW(
+            test_file_name.as_ptr(),
+            buffer_length,
+            buffer.as_mut_ptr(),
+            ptr::null_mut(),
+        )
+    };
+
+    if result == 0 {
+        // Once again, conservatively assume reserved names are not allowed if the
+        // GetFullPathNameW call failed.
+        return false;
+    }
+
+    // Under the old rules, a file name like aux.rs would get converted into \\.\aux, so
+    // we detect this case by checking if the string starts with \\.\
+    //
+    // Otherwise, the filename will be something like C:\Users\Foo\Documents\aux.rs
+    let prefix: Vec<_> = OsStr::new("\\\\.\\").encode_wide().collect();
+    if buffer.starts_with(&prefix) {
+        false
+    } else {
+        true
+    }
 }

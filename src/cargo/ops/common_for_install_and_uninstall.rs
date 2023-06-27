@@ -4,12 +4,14 @@ use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::task::Poll;
 
 use anyhow::{bail, format_err, Context as _};
 use serde::{Deserialize, Serialize};
+use toml_edit::easy as toml;
 
 use crate::core::compiler::Freshness;
-use crate::core::{Dependency, FeatureValue, Package, PackageId, Source, SourceId};
+use crate::core::{Dependency, FeatureValue, Package, PackageId, QueryKind, Source, SourceId};
 use crate::ops::{self, CompileFilter, CompileOptions};
 use crate::sources::PathSource;
 use crate::util::errors::CargoResult;
@@ -355,7 +357,7 @@ impl CrateListingV1 {
         let mut file = lock.file();
         file.seek(SeekFrom::Start(0))?;
         file.set_len(0)?;
-        let data = toml::to_string(self)?;
+        let data = toml::to_string_pretty(self)?;
         file.write_all(data.as_bytes())?;
         Ok(())
     }
@@ -534,10 +536,15 @@ where
     let _lock = config.acquire_package_cache_lock()?;
 
     if needs_update {
-        source.update()?;
+        source.invalidate_cache();
     }
 
-    let deps = source.query_vec(&dep)?;
+    let deps = loop {
+        match source.query_vec(&dep, QueryKind::Exact)? {
+            Poll::Ready(deps) => break deps,
+            Poll::Pending => source.block_until_ready()?,
+        }
+    };
     match deps.iter().map(|p| p.package_id()).max() {
         Some(pkgid) => {
             let pkg = Box::new(source).download_now(pkgid, config)?;
@@ -546,8 +553,20 @@ where
         None => {
             let is_yanked: bool = if dep.version_req().is_exact() {
                 let version: String = dep.version_req().to_string();
-                PackageId::new(dep.package_name(), &version[1..], source.source_id())
-                    .map_or(false, |pkg_id| source.is_yanked(pkg_id).unwrap_or(false))
+                if let Ok(pkg_id) =
+                    PackageId::new(dep.package_name(), &version[1..], source.source_id())
+                {
+                    source.invalidate_cache();
+                    loop {
+                        match source.is_yanked(pkg_id) {
+                            Poll::Ready(Ok(is_yanked)) => break is_yanked,
+                            Poll::Ready(Err(_)) => break false,
+                            Poll::Pending => source.block_until_ready()?,
+                        }
+                    }
+                } else {
+                    false
+                }
             } else {
                 false
             };
@@ -584,7 +603,7 @@ where
     // with other global Cargos
     let _lock = config.acquire_package_cache_lock()?;
 
-    source.update()?;
+    source.invalidate_cache();
 
     return if let Some(dep) = dep {
         select_dep_pkg(source, dep, config, false)

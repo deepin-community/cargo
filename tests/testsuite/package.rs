@@ -140,8 +140,8 @@ fn package_verbose() {
     let repo = git::repo(&root)
         .file("Cargo.toml", &basic_manifest("foo", "0.0.1"))
         .file("src/main.rs", "fn main() {}")
-        .file("a/Cargo.toml", &basic_manifest("a", "0.0.1"))
-        .file("a/src/lib.rs", "")
+        .file("a/a/Cargo.toml", &basic_manifest("a", "0.0.1"))
+        .file("a/a/src/lib.rs", "")
         .build();
     cargo_process("build").cwd(repo.root()).run();
 
@@ -167,7 +167,8 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
         r#"{{
   "git": {{
     "sha1": "{}"
-  }}
+  }},
+  "path_in_vcs": ""
 }}
 "#,
         repo.revparse_head()
@@ -187,7 +188,7 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
 
     println!("package sub-repo");
     cargo_process("package -v --no-verify")
-        .cwd(repo.root().join("a"))
+        .cwd(repo.root().join("a/a"))
         .with_stderr(
             "\
 [WARNING] manifest has no description[..]
@@ -200,6 +201,29 @@ See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for
 ",
         )
         .run();
+
+    let f = File::open(&repo.root().join("a/a/target/package/a-0.0.1.crate")).unwrap();
+    let vcs_contents = format!(
+        r#"{{
+  "git": {{
+    "sha1": "{}"
+  }},
+  "path_in_vcs": "a/a"
+}}
+"#,
+        repo.revparse_head()
+    );
+    validate_crate_contents(
+        f,
+        "a-0.0.1.crate",
+        &[
+            "Cargo.toml",
+            "Cargo.toml.orig",
+            "src/lib.rs",
+            ".cargo_vcs_info.json",
+        ],
+        &[(".cargo_vcs_info.json", &vcs_contents)],
+    );
 }
 
 #[cargo_test]
@@ -253,6 +277,45 @@ fn vcs_file_collision() {
         .with_stderr(
             "\
 [ERROR] invalid inclusion of reserved file name .cargo_vcs_info.json \
+in package source
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn orig_file_collision() {
+    let p = project().build();
+    let _ = git::repo(&paths::root().join("foo"))
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                description = "foo"
+                version = "0.0.1"
+                authors = []
+                license = "MIT"
+                documentation = "foo"
+                homepage = "foo"
+                repository = "foo"
+                exclude = ["*.no-existe"]
+            "#,
+        )
+        .file(
+            "src/main.rs",
+            r#"
+                fn main() {}
+            "#,
+        )
+        .file("Cargo.toml.orig", "oops")
+        .build();
+    p.cargo("package")
+        .arg("--no-verify")
+        .with_status(101)
+        .with_stderr(
+            "\
+[ERROR] invalid inclusion of reserved file name Cargo.toml.orig \
 in package source
 ",
         )
@@ -770,13 +833,140 @@ fn broken_symlink() {
         .with_status(101)
         .with_stderr_contains(
             "\
-error: failed to prepare local package for uploading
+[ERROR] failed to prepare local package for uploading
 
 Caused by:
   failed to open for archiving: `[..]foo.rs`
 
 Caused by:
   [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+/// Tests if a broken but excluded symlink is ignored.
+/// See issue rust-lang/cargo#10917
+///
+/// This test requires you to be able to make symlinks.
+/// For windows, this may require you to enable developer mode.
+fn broken_but_excluded_symlink() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir as symlink;
+
+    if !symlink_supported() {
+        return;
+    }
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+                license = "MIT"
+                description = 'foo'
+                documentation = 'foo'
+                homepage = 'foo'
+                repository = 'foo'
+                exclude = ["src/foo.rs"]
+            "#,
+        )
+        .file("src/main.rs", r#"fn main() { println!("hello"); }"#)
+        .build();
+    t!(symlink("nowhere", &p.root().join("src/foo.rs")));
+
+    p.cargo("package -v --list")
+        // `src/foo.rs` is excluded.
+        .with_stdout(
+            "\
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+#[cfg(not(windows))] // https://github.com/libgit2/libgit2/issues/6250
+/// Test that /dir and /dir/ matches symlinks to directories.
+fn gitignore_symlink_dir() {
+    if !symlink_supported() {
+        return;
+    }
+
+    let (p, _repo) = git::new_repo("foo", |p| {
+        p.file("src/main.rs", r#"fn main() { println!("hello"); }"#)
+            .symlink_dir("src", "src1")
+            .symlink_dir("src", "src2")
+            .symlink_dir("src", "src3")
+            .symlink_dir("src", "src4")
+            .file(".gitignore", "/src1\n/src2/\nsrc3\nsrc4/")
+    });
+
+    p.cargo("package -l --no-metadata")
+        .with_stderr("")
+        .with_stdout(
+            "\
+.cargo_vcs_info.json
+.gitignore
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+#[cfg(not(windows))] // https://github.com/libgit2/libgit2/issues/6250
+/// Test that /dir and /dir/ matches symlinks to directories in dirty working directory.
+fn gitignore_symlink_dir_dirty() {
+    if !symlink_supported() {
+        return;
+    }
+
+    let (p, _repo) = git::new_repo("foo", |p| {
+        p.file("src/main.rs", r#"fn main() { println!("hello"); }"#)
+            .file(".gitignore", "/src1\n/src2/\nsrc3\nsrc4/")
+    });
+
+    p.symlink("src", "src1");
+    p.symlink("src", "src2");
+    p.symlink("src", "src3");
+    p.symlink("src", "src4");
+
+    p.cargo("package -l --no-metadata")
+        .with_stderr("")
+        .with_stdout(
+            "\
+.cargo_vcs_info.json
+.gitignore
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+        )
+        .run();
+
+    p.cargo("package -l --no-metadata --allow-dirty")
+        .with_stderr("")
+        .with_stdout(
+            "\
+.gitignore
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
 ",
         )
         .run();
@@ -799,6 +989,27 @@ fn package_symlink_to_dir() {
         .build()
         .cargo("package -v")
         .with_stderr_contains("[ARCHIVING] foo/Makefile")
+        .run();
+}
+
+#[cargo_test]
+/// Tests if a symlink to ancestor causes filesystem loop error.
+///
+/// This test requires you to be able to make symlinks.
+/// For windows, this may require you to enable developer mode.
+fn filesystem_loop() {
+    if !symlink_supported() {
+        return;
+    }
+
+    project()
+        .file("src/main.rs", r#"fn main() { println!("hello"); }"#)
+        .symlink_dir("a/b", "a/b/c/d/foo")
+        .build()
+        .cargo("package -v")
+        .with_stderr_contains(
+            "[WARNING] File system loop found: [..]/a/b/c/d/foo points to an ancestor [..]/a/b",
+        )
         .run();
 }
 
@@ -910,7 +1121,7 @@ src/lib.rs
 
 #[cargo_test]
 fn generated_manifest() {
-    registry::alt_init();
+    let registry = registry::alt_init();
     Package::new("abc", "1.0.0").publish();
     Package::new("def", "1.0.0").alternative(true).publish();
     Package::new("ghi", "1.0.0").publish();
@@ -960,6 +1171,7 @@ license = "MIT"
 
 [package.metadata]
 foo = "bar"
+
 [dependencies.abc]
 version = "1.0"
 
@@ -974,7 +1186,7 @@ registry-index = "{}"
 version = "1.0"
 "#,
         cargo::core::package::MANIFEST_PREAMBLE,
-        registry::alt_registry_url()
+        registry.index_url()
     );
 
     validate_crate_contents(
@@ -1774,7 +1986,8 @@ fn package_restricted_windows() {
         .build();
 
     p.cargo("package")
-        .with_stderr(
+        // use unordered here because the order of the warning is different on each platform.
+        .with_stderr_unordered(
             "\
 [WARNING] file src/aux/mod.rs is a reserved Windows filename, it will not work on Windows platforms
 [WARNING] file src/con.rs is a reserved Windows filename, it will not work on Windows platforms
@@ -1843,6 +2056,12 @@ src/lib.rs
 #[cargo_test]
 #[cfg(windows)]
 fn reserved_windows_name() {
+    // If we are running on a version of Windows that allows these reserved filenames,
+    // skip this test.
+    if paths::windows_reserved_names_are_allowed() {
+        return;
+    }
+
     Package::new("bar", "1.0.0")
         .file("src/lib.rs", "pub mod aux;")
         .file("src/aux.rs", "")
@@ -2160,4 +2379,75 @@ See [..]
 
     assert!(p.root().join("target/package/foo-0.0.1.crate").is_file());
     assert!(p.root().join("target/package/bar-0.0.1.crate").is_file());
+}
+
+#[cargo_test]
+fn workspace_overrides_resolver() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.0"
+                edition = "2021"
+            "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .file(
+            "baz/Cargo.toml",
+            r#"
+                [package]
+                name = "baz"
+                version = "0.1.0"
+                edition = "2015"
+            "#,
+        )
+        .file("baz/src/lib.rs", "")
+        .build();
+
+    p.cargo("package --no-verify -p bar -p baz").run();
+
+    let f = File::open(&p.root().join("target/package/bar-0.1.0.crate")).unwrap();
+    let rewritten_toml = format!(
+        r#"{}
+[package]
+edition = "2021"
+name = "bar"
+version = "0.1.0"
+resolver = "1"
+"#,
+        cargo::core::package::MANIFEST_PREAMBLE
+    );
+    validate_crate_contents(
+        f,
+        "bar-0.1.0.crate",
+        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs"],
+        &[("Cargo.toml", &rewritten_toml)],
+    );
+
+    // When the crate has the same implicit resolver as the workspace it is not overridden
+    let f = File::open(&p.root().join("target/package/baz-0.1.0.crate")).unwrap();
+    let rewritten_toml = format!(
+        r#"{}
+[package]
+edition = "2015"
+name = "baz"
+version = "0.1.0"
+"#,
+        cargo::core::package::MANIFEST_PREAMBLE
+    );
+    validate_crate_contents(
+        f,
+        "baz-0.1.0.crate",
+        &["Cargo.toml", "Cargo.toml.orig", "src/lib.rs"],
+        &[("Cargo.toml", &rewritten_toml)],
+    );
 }

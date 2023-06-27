@@ -15,7 +15,5 @@
 # Drop the "vendored" feature since we patch it out of debcargo
 sed -i /vendored/d Cargo.toml
 
-# For cargo 0.57.0 / rustc 1.56.0
-cargo update -p tempfile --precise 3.1.0
-cargo update -p filetime --precise 0.2.12
-cargo update -p regex    --precise 1.3.9
+# avoid pulling in windows-sys for now
+cargo update -p schannel --precise 0.1.19

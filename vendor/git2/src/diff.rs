@@ -254,6 +254,8 @@ impl<'repo> Diff<'repo> {
     /// Create an e-mail ready patch from a diff.
     ///
     /// Matches the format created by `git format-patch`
+    #[doc(hidden)]
+    #[deprecated(note = "refactored to `Email::from_diff` to match upstream")]
     pub fn format_email(
         &mut self,
         patch_no: usize,
@@ -277,6 +279,7 @@ impl<'repo> Diff<'repo> {
         raw_opts.body = message.as_ptr() as *const _;
         raw_opts.author = commit.author().raw();
         let buf = Buf::new();
+        #[allow(deprecated)]
         unsafe {
             try_call!(raw::git_diff_format_email(buf.raw(), self.raw, &*raw_opts));
         }
@@ -1170,7 +1173,7 @@ impl<'a> std::fmt::Debug for DiffHunk<'a> {
 }
 
 impl DiffStats {
-    /// Get the total number of files chaned in a diff.
+    /// Get the total number of files changed in a diff.
     pub fn files_changed(&self) -> usize {
         unsafe { raw::git_diff_stats_files_changed(&*self.raw) as usize }
     }
@@ -1452,7 +1455,7 @@ impl DiffFindOptions {
         self
     }
 
-    /// Similarity of modified to be glegible rename source (default 50)
+    /// Similarity of modified to be eligible rename source (default 50)
     pub fn rename_from_rewrite_threshold(&mut self, thresh: u16) -> &mut DiffFindOptions {
         self.raw.rename_from_rewrite_threshold = thresh;
         self
@@ -1480,6 +1483,11 @@ impl DiffFindOptions {
     }
 
     // TODO: expose git_diff_similarity_metric
+
+    /// Acquire a pointer to the underlying raw options.
+    pub unsafe fn raw(&mut self) -> *const raw::git_diff_find_options {
+        &self.raw
+    }
 }
 
 impl Default for DiffFormatEmailOptions {
@@ -1775,6 +1783,7 @@ mod tests {
                 None,
             )
             .unwrap();
+        #[allow(deprecated)]
         let actual_email = diff.format_email(1, 1, &updated_commit, None).unwrap();
         let actual_email = actual_email.as_str().unwrap();
         assert!(

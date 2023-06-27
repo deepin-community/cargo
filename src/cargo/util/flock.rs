@@ -374,8 +374,10 @@ mod sys {
 
     pub(super) fn error_unsupported(err: &Error) -> bool {
         match err.raw_os_error() {
-            Some(libc::ENOTSUP) => true,
-            #[cfg(target_os = "linux")]
+            // Unfortunately, depending on the target, these may or may not be the same.
+            // For targets in which they are the same, the duplicate pattern causes a warning.
+            #[allow(unreachable_patterns)]
+            Some(libc::ENOTSUP | libc::EOPNOTSUPP) => true,
             Some(libc::ENOSYS) => true,
             _ => false,
         }

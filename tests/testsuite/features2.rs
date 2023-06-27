@@ -2012,7 +2012,7 @@ fn minimal_download() {
     // none
     // Should be the same as `-Zfeatures=all`
     p.cargo("check -Zfeatures=compare")
-        .masquerade_as_nightly_cargo()
+        .masquerade_as_nightly_cargo(&["features=compare"])
         .with_stderr_unordered(
             "\
 [UPDATING] [..]
@@ -2074,6 +2074,7 @@ fn minimal_download() {
 [COMPILING] dev_dep v1.0.0
 [COMPILING] foo v0.1.0 [..]
 [FINISHED] [..]
+[EXECUTABLE] unittests src/lib.rs (target/debug/deps/foo-[..][EXE])
 ",
         )
         .run();
@@ -2388,7 +2389,6 @@ foo v0.1.0 [..]
     // Importantly, this does not include `f1` on `common`.
     p.cargo("tree -f")
         .arg("{p} feats:{f}")
-        .masquerade_as_nightly_cargo()
         .with_stdout(
             "\
 foo v0.1.0 [..]
@@ -2396,5 +2396,79 @@ foo v0.1.0 [..]
 └── common v1.0.0 feats:
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn all_features_merges_with_features() {
+    Package::new("dep", "0.1.0")
+        .feature("feat1", &[])
+        .file(
+            "src/lib.rs",
+            r#"
+                #[cfg(feature="feat1")]
+                pub fn work() {
+                    println!("it works");
+                }
+            "#,
+        )
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2018"
+
+                [features]
+                a = []
+
+                [dependencies]
+                dep = "0.1"
+
+                [[example]]
+                name = "ex"
+                required-features = ["a", "dep/feat1"]
+            "#,
+        )
+        .file(
+            "examples/ex.rs",
+            r#"
+            fn main() {
+                dep::work();
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("run --example ex --all-features --features dep/feat1")
+        .with_stderr(
+            "\
+[UPDATING] [..]
+[DOWNLOADING] crates ...
+[DOWNLOADED] [..]
+[COMPILING] dep v0.1.0
+[COMPILING] foo v0.1.0 [..]
+[FINISHED] [..]
+[RUNNING] `target/debug/examples/ex[EXE]`
+",
+        )
+        .with_stdout("it works")
+        .run();
+
+    switch_to_resolver_2(&p);
+
+    p.cargo("run --example ex --all-features --features dep/feat1")
+        .with_stderr(
+            "\
+[FINISHED] [..]
+[RUNNING] `target/debug/examples/ex[EXE]`
+",
+        )
+        .with_stdout("it works")
         .run();
 }

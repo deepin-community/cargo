@@ -25,6 +25,9 @@ pub struct Doctest {
     ///
     /// This is used for indexing [`Compilation::extra_env`].
     pub script_meta: Option<Metadata>,
+
+    /// Environment variables to set in the rustdoc process.
+    pub env: HashMap<String, OsString>,
 }
 
 /// Information about the output of a unit.
@@ -190,14 +193,15 @@ impl<'cfg> Compilation<'cfg> {
     ) -> CargoResult<ProcessBuilder> {
         let rustdoc = ProcessBuilder::new(&*self.config.rustdoc()?);
         let cmd = fill_rustc_tool_env(rustdoc, unit);
-        let mut p = self.fill_env(cmd, &unit.pkg, script_meta, unit.kind, true)?;
-        unit.target.edition().cmd_edition_arg(&mut p);
+        let mut cmd = self.fill_env(cmd, &unit.pkg, script_meta, unit.kind, true)?;
+        cmd.retry_with_argfile(true);
+        unit.target.edition().cmd_edition_arg(&mut cmd);
 
         for crate_type in unit.target.rustc_crate_types() {
-            p.arg("--crate-type").arg(crate_type.as_str());
+            cmd.arg("--crate-type").arg(crate_type.as_str());
         }
 
-        Ok(p)
+        Ok(cmd)
     }
 
     /// Returns a [`ProcessBuilder`] appropriate for running a process for the
@@ -343,6 +347,10 @@ impl<'cfg> Compilation<'cfg> {
                 metadata.license_file.as_ref().unwrap_or(&String::new()),
             )
             .env("CARGO_PKG_AUTHORS", &pkg.authors().join(":"))
+            .env(
+                "CARGO_PKG_RUST_VERSION",
+                &pkg.rust_version().unwrap_or(&String::new()),
+            )
             .cwd(pkg.root());
 
         // Apply any environment variables from the config
@@ -401,7 +409,7 @@ fn target_runner(
     let matching_runner = cfgs.next();
     if let Some((key, runner)) = cfgs.next() {
         anyhow::bail!(
-            "several matching instances of `target.'cfg(..)'.runner` in `.cargo/config`\n\
+            "several matching instances of `target.'cfg(..)'.runner` in configurations\n\
              first match `{}` located in {}\n\
              second match `{}` located in {}",
             matching_runner.unwrap().0,

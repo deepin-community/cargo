@@ -69,13 +69,22 @@ the source directory of the build script’s package.
 
 ### Outputs of the Build Script
 
-Build scripts may save any output files in the directory specified in the
-[`OUT_DIR` environment variable][build-env]. Scripts should not modify any
-files outside of that directory.
+Build scripts may save any output files or intermediate artifacts in the
+directory specified in the [`OUT_DIR` environment variable][build-env]. Scripts
+should not modify any files outside of that directory.
 
 Build scripts communicate with Cargo by printing to stdout. Cargo will
 interpret each line that starts with `cargo:` as an instruction that will
 influence compilation of the package. All other lines are ignored.
+
+> Note: The order of `cargo:` instructions printed by the build script *may*
+> affect the order of arguments that `cargo` passes to `rustc`. In turn, the
+> order of arguments passed to `rustc` may affect the order of arguments passed
+> to the linker. Therefore, you will want to pay attention to the order of the
+> build script's instructions. For example, if object `foo` needs to link against
+> library `bar`, you may want to make sure that library `bar`'s
+> [`cargo:rustc-link-lib`](#rustc-link-lib) instruction appears *after*
+> instructions to link object `foo`.
 
 The output of the script is hidden from the terminal during normal
 compilation. If you would like to see the output directly in your terminal,
@@ -100,7 +109,13 @@ one detailed below.
   flags to a linker for the binary `BIN`.
 * [`cargo:rustc-link-arg-bins=FLAG`](#rustc-link-arg-bins) – Passes custom
   flags to a linker for binaries.
-* [`cargo:rustc-link-lib=[KIND=]NAME`](#rustc-link-lib) — Adds a library to
+* [`cargo:rustc-link-arg-tests=FLAG`](#rustc-link-arg-tests) – Passes custom
+  flags to a linker for tests.
+* [`cargo:rustc-link-arg-examples=FLAG`](#rustc-link-arg-examples) – Passes custom
+  flags to a linker for examples.
+* [`cargo:rustc-link-arg-benches=FLAG`](#rustc-link-arg-benches) – Passes custom
+  flags to a linker for benchmarks.
+* [`cargo:rustc-link-lib=LIB`](#rustc-link-lib) — Adds a library to
   link.
 * [`cargo:rustc-link-search=[KIND=]PATH`](#rustc-link-search) — Adds to the
   library search path.
@@ -136,7 +151,6 @@ link-arg=FLAG` option][link-arg] to the compiler, but only when building
 the binary target with name `BIN`. Its usage is highly platform specific. It is useful
 to set a linker script or other linker options.
 
-[link-arg]: ../../rustc/codegen-options/index.md#link-arg
 
 <a id="rustc-link-arg-bins"></a>
 #### `cargo:rustc-link-arg-bins=FLAG`
@@ -146,14 +160,17 @@ link-arg=FLAG` option][link-arg] to the compiler, but only when building a
 binary target. Its usage is highly platform specific. It is useful
 to set a linker script or other linker options.
 
-[link-arg]: ../../rustc/codegen-options/index.md#link-arg
 
 <a id="rustc-link-lib"></a>
-#### `cargo:rustc-link-lib=[KIND=]NAME`
+#### `cargo:rustc-link-lib=LIB`
 
 The `rustc-link-lib` instruction tells Cargo to link the given library using
 the compiler's [`-l` flag][option-link]. This is typically used to link a
 native library using [FFI].
+
+The `LIB` string is passed directly to rustc, so it supports any syntax that
+`-l` does. \
+Currently the full supported syntax for `LIB` is `[KIND[:MODIFIERS]=]NAME[:RENAME]`.
 
 The `-l` flag is only passed to the library target of the package, unless
 there is no library target, in which case it is passed to all targets. This is
@@ -168,6 +185,29 @@ The optional `KIND` may be one of `dylib`, `static`, or `framework`. See the
 
 [option-link]: ../../rustc/command-line-arguments.md#option-l-link-lib
 [FFI]: ../../nomicon/ffi.md
+
+
+<a id="rustc-link-arg-tests"></a>
+#### `cargo:rustc-link-arg-tests=FLAG`
+
+The `rustc-link-arg-tests` instruction tells Cargo to pass the [`-C
+link-arg=FLAG` option][link-arg] to the compiler, but only when building a
+tests target.
+
+
+<a id="rustc-link-arg-examples"></a>
+#### `cargo:rustc-link-arg-examples=FLAG`
+
+The `rustc-link-arg-examples` instruction tells Cargo to pass the [`-C
+link-arg=FLAG` option][link-arg] to the compiler, but only when building an examples
+target.
+
+<a id="rustc-link-arg-benches"></a>
+#### `cargo:rustc-link-arg-benches=FLAG`
+
+The `rustc-link-arg-benches` instruction tells Cargo to pass the [`-C
+link-arg=FLAG` option][link-arg] to the compiler, but only when building an benchmark
+target.
 
 <a id="rustc-link-search"></a>
 #### `cargo:rustc-link-search=[KIND=]PATH`
@@ -247,7 +287,6 @@ link-arg=FLAG` option][link-arg] to the compiler, but only when building a
 `cdylib` library target. Its usage is highly platform specific. It is useful
 to set the shared library version or the runtime-path.
 
-[link-arg]: ../../rustc/codegen-options/index.md#link-arg
 
 <a id="cargo-warning"></a>
 #### `cargo:warning=MESSAGE`
@@ -289,7 +328,9 @@ list of files controlled by the [`exclude` and `include` fields]). For most
 cases, this is not a good choice, so it is recommended that every build script
 emit at least one of the `rerun-if` instructions (described below). If these
 are emitted, then Cargo will only re-run the script if the given value has
-changed.
+changed. If Cargo is re-running the build scripts of your own crate or a
+dependency and you don't know why, see ["Why is Cargo rebuilding my code?" in the
+FAQ](../faq.md#why-is-cargo-rebuilding-my-code).
 
 [`exclude` and `include` fields]: manifest.md#the-exclude-and-include-fields
 
@@ -371,8 +412,8 @@ pieces of functionality:
 * The library crate should link to the native library `libfoo`. This will often
   probe the current system for `libfoo` before resorting to building from
   source.
-* The library crate should provide **declarations** for functions in `libfoo`,
-  but **not** bindings or higher-level abstractions.
+* The library crate should provide **declarations** for types and functions in
+  `libfoo`, but **not** higher-level abstractions.
 
 The set of `*-sys` packages provides a common set of dependencies for linking
 to native libraries. There are a number of benefits earned from having this

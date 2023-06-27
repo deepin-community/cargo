@@ -1,5 +1,6 @@
 # cargo-build(1)
 {{*set actionverb="Build"}}
+{{*set multitarget=true}}
 
 ## NAME
 
@@ -23,6 +24,8 @@ When no target selection options are given, `cargo build` will build all
 binary and library targets of the selected packages. Binaries are skipped if
 they have `required-features` that are missing.
 
+{{> options-targets-bin-auto-built }}
+
 {{> options-targets }}
 
 {{> section-features }}
@@ -35,7 +38,11 @@ they have `required-features` that are missing.
 
 {{> options-release }}
 
+{{> options-profile }}
+
 {{> options-ignore-rust-version }}
+
+{{> options-timings }}
 
 {{/options}}
 
@@ -87,9 +94,9 @@ See <https://github.com/rust-lang/cargo/issues/5579> for more information.
 
 {{#options}}
 {{> options-jobs }}
+{{> options-keep-going }}
+{{> options-future-incompat }}
 {{/options}}
-
-{{> section-profiles }}
 
 {{> section-environment }}
 

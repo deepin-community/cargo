@@ -2,6 +2,7 @@ use crate::command_prelude::*;
 
 pub fn builtin() -> Vec<App> {
     vec![
+        add::cli(),
         bench::cli(),
         build::cli(),
         check::cli(),
@@ -12,6 +13,7 @@ pub fn builtin() -> Vec<App> {
         fix::cli(),
         generate_lockfile::cli(),
         git_checkout::cli(),
+        help::cli(),
         init::cli(),
         install::cli(),
         locate_project::cli(),
@@ -40,8 +42,9 @@ pub fn builtin() -> Vec<App> {
     ]
 }
 
-pub fn builtin_exec(cmd: &str) -> Option<fn(&mut Config, &ArgMatches<'_>) -> CliResult> {
+pub fn builtin_exec(cmd: &str) -> Option<fn(&mut Config, &ArgMatches) -> CliResult> {
     let f = match cmd {
+        "add" => add::exec,
         "bench" => bench::exec,
         "build" => build::exec,
         "check" => check::exec,
@@ -52,6 +55,7 @@ pub fn builtin_exec(cmd: &str) -> Option<fn(&mut Config, &ArgMatches<'_>) -> Cli
         "fix" => fix::exec,
         "generate-lockfile" => generate_lockfile::exec,
         "git-checkout" => git_checkout::exec,
+        "help" => help::exec,
         "init" => init::exec,
         "install" => install::exec,
         "locate-project" => locate_project::exec,
@@ -82,6 +86,7 @@ pub fn builtin_exec(cmd: &str) -> Option<fn(&mut Config, &ArgMatches<'_>) -> Cli
     Some(f)
 }
 
+pub mod add;
 pub mod bench;
 pub mod build;
 pub mod check;

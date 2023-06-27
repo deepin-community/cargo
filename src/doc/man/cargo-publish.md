@@ -1,5 +1,6 @@
 # cargo-publish(1)
 {{*set actionverb="Publish"}}
+{{*set multitarget=true}}
 
 ## NAME
 
@@ -91,6 +92,7 @@ which defaults to `crates-io`.
 
 {{#options}}
 {{> options-jobs }}
+{{> options-keep-going }}
 {{/options}}
 
 ### Display Options

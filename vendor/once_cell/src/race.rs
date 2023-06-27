@@ -5,11 +5,29 @@
 //! them stores the result.
 //!
 //! This module does not require `std` feature.
+//!
+//! # Atomic orderings
+//!
+//! All types in this module use `Acquire` and `Release`
+//! [atomic orderings](Ordering) for all their operations. While this is not
+//! strictly necessary for types other than `OnceBox`, it is useful for users as
+//! it allows them to be certain that after `get` or `get_or_init` returns on
+//! one thread, any side-effects caused by the setter thread prior to them
+//! calling `set` or `get_or_init` will be made visible to that thread; without
+//! it, it's possible for it to appear as if they haven't happened yet from the
+//! getter thread's perspective. This is an acceptable tradeoff to make since
+//! `Acquire` and `Release` have very little performance overhead on most
+//! architectures versus `Relaxed`.
 
-use core::{
-    num::NonZeroUsize,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+#[cfg(feature = "critical-section")]
+use atomic_polyfill as atomic;
+#[cfg(not(feature = "critical-section"))]
+use core::sync::atomic;
+
+use atomic::{AtomicUsize, Ordering};
+use core::cell::UnsafeCell;
+use core::marker::PhantomData;
+use core::num::NonZeroUsize;
 
 /// A thread-safe cell which can be written to only once.
 #[derive(Default, Debug)]
@@ -149,10 +167,101 @@ impl OnceBool {
     fn from_usize(value: NonZeroUsize) -> bool {
         value.get() == 1
     }
+
     #[inline]
     fn to_usize(value: bool) -> NonZeroUsize {
         unsafe { NonZeroUsize::new_unchecked(if value { 1 } else { 2 }) }
     }
+}
+
+/// A thread-safe cell which can be written to only once.
+pub struct OnceRef<'a, T> {
+    inner: OnceNonZeroUsize,
+    ghost: PhantomData<UnsafeCell<&'a T>>,
+}
+
+// TODO: Replace UnsafeCell with SyncUnsafeCell once stabilized
+unsafe impl<'a, T: Sync> Sync for OnceRef<'a, T> {}
+
+impl<'a, T> core::fmt::Debug for OnceRef<'a, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "OnceRef({:?})", self.inner)
+    }
+}
+
+impl<'a, T> Default for OnceRef<'a, T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'a, T> OnceRef<'a, T> {
+    /// Creates a new empty cell.
+    pub const fn new() -> OnceRef<'a, T> {
+        OnceRef { inner: OnceNonZeroUsize::new(), ghost: PhantomData }
+    }
+
+    /// Gets a reference to the underlying value.
+    pub fn get(&self) -> Option<&'a T> {
+        self.inner.get().map(|ptr| unsafe { &*(ptr.get() as *const T) })
+    }
+
+    /// Sets the contents of this cell to `value`.
+    ///
+    /// Returns `Ok(())` if the cell was empty and `Err(value)` if it was
+    /// full.
+    pub fn set(&self, value: &'a T) -> Result<(), ()> {
+        let ptr = NonZeroUsize::new(value as *const T as usize).unwrap();
+        self.inner.set(ptr)
+    }
+
+    /// Gets the contents of the cell, initializing it with `f` if the cell was
+    /// empty.
+    ///
+    /// If several threads concurrently run `get_or_init`, more than one `f` can
+    /// be called. However, all threads will return the same value, produced by
+    /// some `f`.
+    pub fn get_or_init<F>(&self, f: F) -> &'a T
+    where
+        F: FnOnce() -> &'a T,
+    {
+        let f = || NonZeroUsize::new(f() as *const T as usize).unwrap();
+        let ptr = self.inner.get_or_init(f);
+        unsafe { &*(ptr.get() as *const T) }
+    }
+
+    /// Gets the contents of the cell, initializing it with `f` if
+    /// the cell was empty. If the cell was empty and `f` failed, an
+    /// error is returned.
+    ///
+    /// If several threads concurrently run `get_or_init`, more than one `f` can
+    /// be called. However, all threads will return the same value, produced by
+    /// some `f`.
+    pub fn get_or_try_init<F, E>(&self, f: F) -> Result<&'a T, E>
+    where
+        F: FnOnce() -> Result<&'a T, E>,
+    {
+        let f = || f().map(|value| NonZeroUsize::new(value as *const T as usize).unwrap());
+        let ptr = self.inner.get_or_try_init(f)?;
+        unsafe { Ok(&*(ptr.get() as *const T)) }
+    }
+
+    /// ```compile_fail
+    /// use once_cell::race::OnceRef;
+    ///
+    /// let mut l = OnceRef::new();
+    ///
+    /// {
+    ///     let y = 2;
+    ///     let mut r = OnceRef::new();
+    ///     r.set(&y).unwrap();
+    ///     core::mem::swap(&mut l, &mut r);
+    /// }
+    ///
+    /// // l now contains a dangling reference to y
+    /// eprintln!("uaf: {}", l.get().unwrap());
+    /// ```
+    fn _dummy() {}
 }
 
 #[cfg(feature = "alloc")]
@@ -160,19 +269,21 @@ pub use self::once_box::OnceBox;
 
 #[cfg(feature = "alloc")]
 mod once_box {
-    use core::{
-        marker::PhantomData,
-        ptr,
-        sync::atomic::{AtomicPtr, Ordering},
-    };
+    use super::atomic::{AtomicPtr, Ordering};
+    use core::{marker::PhantomData, ptr};
 
     use alloc::boxed::Box;
 
     /// A thread-safe cell which can be written to only once.
-    #[derive(Debug)]
     pub struct OnceBox<T> {
         inner: AtomicPtr<T>,
         ghost: PhantomData<Option<Box<T>>>,
+    }
+
+    impl<T> core::fmt::Debug for OnceBox<T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "OnceBox({:?})", self.inner.load(Ordering::Relaxed))
+        }
     }
 
     impl<T> Default for OnceBox<T> {

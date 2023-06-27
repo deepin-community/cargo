@@ -28,6 +28,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// When parsing macro input, the [`parse_macro_input!`] macro handles the
 /// conversion to `compile_error!` automatically.
 ///
+/// [`parse_macro_input!`]: crate::parse_macro_input!
+///
 /// ```
 /// # extern crate proc_macro;
 /// #
@@ -47,10 +49,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// ```
 ///
 /// For errors that arise later than the initial parsing stage, the
-/// [`.to_compile_error()`] method can be used to perform an explicit conversion
-/// to `compile_error!`.
+/// [`.to_compile_error()`] or [`.into_compile_error()`] methods can be used to
+/// perform an explicit conversion to `compile_error!`.
 ///
 /// [`.to_compile_error()`]: Error::to_compile_error
+/// [`.into_compile_error()`]: Error::into_compile_error
 ///
 /// ```
 /// # extern crate proc_macro;
@@ -66,7 +69,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 ///     // fn(DeriveInput) -> syn::Result<proc_macro2::TokenStream>
 ///     expand::my_derive(input)
-///         .unwrap_or_else(|err| err.to_compile_error())
+///         .unwrap_or_else(syn::Error::into_compile_error)
 ///         .into()
 /// }
 /// #
@@ -131,12 +134,16 @@ impl Error {
     /// }
     /// ```
     pub fn new<T: Display>(span: Span, message: T) -> Self {
-        Error {
-            messages: vec![ErrorMessage {
-                start_span: ThreadBound::new(span),
-                end_span: ThreadBound::new(span),
-                message: message.to_string(),
-            }],
+        return new(span, message.to_string());
+
+        fn new(span: Span, message: String) -> Error {
+            Error {
+                messages: vec![ErrorMessage {
+                    start_span: ThreadBound::new(span),
+                    end_span: ThreadBound::new(span),
+                    message,
+                }],
+            }
         }
     }
 
@@ -155,15 +162,19 @@ impl Error {
     /// `ParseStream::error`)!
     #[cfg(feature = "printing")]
     pub fn new_spanned<T: ToTokens, U: Display>(tokens: T, message: U) -> Self {
-        let mut iter = tokens.into_token_stream().into_iter();
-        let start = iter.next().map_or_else(Span::call_site, |t| t.span());
-        let end = iter.last().map_or(start, |t| t.span());
-        Error {
-            messages: vec![ErrorMessage {
-                start_span: ThreadBound::new(start),
-                end_span: ThreadBound::new(end),
-                message: message.to_string(),
-            }],
+        return new_spanned(tokens.into_token_stream(), message.to_string());
+
+        fn new_spanned(tokens: TokenStream, message: String) -> Error {
+            let mut iter = tokens.into_iter();
+            let start = iter.next().map_or_else(Span::call_site, |t| t.span());
+            let end = iter.last().map_or(start, |t| t.span());
+            Error {
+                messages: vec![ErrorMessage {
+                    start_span: ThreadBound::new(start),
+                    end_span: ThreadBound::new(end),
+                    message,
+                }],
+            }
         }
     }
 
@@ -190,6 +201,7 @@ impl Error {
     /// this method correctly in a procedural macro.
     ///
     /// [`compile_error!`]: std::compile_error!
+    /// [`parse_macro_input!`]: crate::parse_macro_input!
     pub fn to_compile_error(&self) -> TokenStream {
         self.messages
             .iter()
@@ -284,12 +296,16 @@ pub fn new_at<T: Display>(scope: Span, cursor: Cursor, message: T) -> Error {
 
 #[cfg(all(feature = "parsing", any(feature = "full", feature = "derive")))]
 pub fn new2<T: Display>(start: Span, end: Span, message: T) -> Error {
-    Error {
-        messages: vec![ErrorMessage {
-            start_span: ThreadBound::new(start),
-            end_span: ThreadBound::new(end),
-            message: message.to_string(),
-        }],
+    return new2(start, end, message.to_string());
+
+    fn new2(start: Span, end: Span, message: String) -> Error {
+        Error {
+            messages: vec![ErrorMessage {
+                start_span: ThreadBound::new(start),
+                end_span: ThreadBound::new(end),
+                message,
+            }],
+        }
     }
 }
 

@@ -1,3 +1,104 @@
+cargo (0.66.0+ds1-1) unstable; urgency=medium
+
+  [ Fabian Grünbichler ]
+  * fix CVE-2022-46176 (Thanks Peter Green!)
+  * repack vendored sources with required libgit2-sys/git2/git2-curl versions
+  * update unsuspicious files
+
+ -- Fabian Gruenbichler <debian@fabian.gruenbichler.email>  Wed, 11 Jan 2023 18:55:09 +0100
+
+cargo (0.66.0-1) unstable; urgency=medium
+
+  * new upstream version 0.66
+
+  [ Blair Noctis ]
+  * Update debcargo-conf.patch, unapply tempfile patch to match vendored
+  * Refresh patches and remove upstream applied CVE patches
+  * Patch test macro to work around qemu vfork bug when command not found
+
+  [ Fabian Grünbichler ]
+  * no longer pin git2/libgit2-sys
+  * update debcargo-conf.patch (concolor, clap)
+  * update unsuspicious files
+  * d/control: depend on rustc 1.63
+  * drop armel workaround
+
+  [ Rob Shearman ]
+  * d/control: update minimum cargo, rustc and libstd-rust-dev versions
+
+ -- Fabian Gruenbichler <debian@fabian.gruenbichler.email>  Sun, 08 Jan 2023 16:38:30 +0100
+
+cargo (0.63.1-3) unstable; urgency=medium
+
+  * workaround armel breakage
+
+ -- Fabian Gruenbichler <debian@fabian.gruenbichler.email>  Wed, 07 Dec 2022 14:58:58 +0100
+
+cargo (0.63.1-2) unstable; urgency=medium
+
+  [ Ryan Gonzalez ]
+  * Fix path remapping for crate dependencies
+
+  [ Fabian Grünbichler ]
+  * disable utf-8 fs-specific test
+  * fix i386 build / cross tests
+
+ -- Fabian Gruenbichler <debian@fabian.gruenbichler.email>  Sat, 19 Nov 2022 10:48:29 +0100
+
+cargo (0.63.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * switch to libgit2-1.5 (Closes: #1021504, #1017828)
+  * Update guess-crate-copyright to handle missing authors field gracefully
+  * Update audit-vendor-source to handle ZFS and similar file systems
+  * silence GZIP deprecation warning
+  * fix CVE-2022-36113/CVE-2022-36114 (Closes: #1021142)
+
+  [ Helmut Grohne ]
+  * Fix FTCBFS: Missing Build-Depends: zlib1g-dev:native. (Closes: #1019491)
+
+ -- Fabian Gruenbichler <debian@fabian.gruenbichler.email>  Sat, 17 Sep 2022 22:25:02 +0200
+
+cargo (0.57.0-7) unstable; urgency=medium
+
+  * Team upload.
+  * Upload to unstable.
+
+ -- Peter Michael Green <plugwash@debian.org>  Mon, 02 May 2022 20:57:46 +0000
+
+cargo (0.57.0-6) experimental; urgency=medium
+
+  * Team upload.
+  * Fix debian cargo wrapper to stop looking for subcommands once it finds one
+    so that it is possible to test features whose name matches a subcommand.
+  * Limit autopkgtest to architectures where it does not run out of disk space.
+  * Remove patches for libgit2 1.1.x and adjust dependency for 0.3.x
+    (Closes: 1009015)
+  * Remove build-dependency on cmake (Closes: 981256)
+
+ -- Peter Michael Green <plugwash@debian.org>  Sun, 10 Apr 2022 00:10:04 +0000
+
+cargo (0.57.0-5) unstable; urgency=medium
+
+  [ Simon Chopin ]
+  * Disable cross-build tests in autopkgtests
+  * d/p/0001-Change-test-to-not-trigger-emoji-error.patch:
+    Cherry-picked from upstream to fix testsuite against rustc 1.57
+  * d/p/0002-Remove-eacces-test.patch: Cherry-picked from upstream as
+    cargo doesn't seem to trigger the error with recent Rust
+
+ -- Ximin Luo <infinity0@debian.org>  Wed, 09 Mar 2022 13:52:14 +0000
+
+cargo (0.57.0-4) unstable; urgency=medium
+
+  [ Simon Chopin ]
+  * Add an autopkgtest for cargo to build itself
+
+  [ Ximin Luo ]
+  * Fix FTBFS on x32.
+
+ -- Ximin Luo <infinity0@debian.org>  Mon, 07 Mar 2022 20:35:00 +0000
+
 cargo (0.57.0-3) unstable; urgency=medium
 
   * Actually fix failing tests.

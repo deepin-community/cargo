@@ -65,7 +65,7 @@
 //! source `Repository`, to ensure that they do not outlive the repository
 //! itself.
 
-#![doc(html_root_url = "https://docs.rs/git2/0.13")]
+#![doc(html_root_url = "https://docs.rs/git2/0.16")]
 #![allow(trivial_numeric_casts, trivial_casts)]
 #![deny(missing_docs)]
 #![warn(rust_2018_idioms)]
@@ -93,6 +93,7 @@ pub use crate::describe::{Describe, DescribeFormatOptions, DescribeOptions};
 pub use crate::diff::{Deltas, Diff, DiffDelta, DiffFile, DiffOptions};
 pub use crate::diff::{DiffBinary, DiffBinaryFile, DiffBinaryKind};
 pub use crate::diff::{DiffFindOptions, DiffHunk, DiffLine, DiffLineType, DiffStats};
+pub use crate::email::{Email, EmailCreateOptions};
 pub use crate::error::Error;
 pub use crate::index::{
     Index, IndexConflict, IndexConflicts, IndexEntries, IndexEntry, IndexMatchedPath,
@@ -101,7 +102,11 @@ pub use crate::indexer::{IndexerProgress, Progress};
 pub use crate::mailmap::Mailmap;
 pub use crate::mempack::Mempack;
 pub use crate::merge::{AnnotatedCommit, MergeOptions};
-pub use crate::message::{message_prettify, DEFAULT_COMMENT_CHAR};
+pub use crate::message::{
+    message_prettify, message_trailers_bytes, message_trailers_strs, MessageTrailersBytes,
+    MessageTrailersBytesIterator, MessageTrailersStrs, MessageTrailersStrsIterator,
+    DEFAULT_COMMENT_CHAR,
+};
 pub use crate::note::{Note, Notes};
 pub use crate::object::Object;
 pub use crate::odb::{Odb, OdbObject, OdbPackwriter, OdbReader, OdbWriter};
@@ -116,9 +121,9 @@ pub use crate::reference::{Reference, ReferenceNames, References};
 pub use crate::reflog::{Reflog, ReflogEntry, ReflogIter};
 pub use crate::refspec::Refspec;
 pub use crate::remote::{
-    FetchOptions, PushOptions, Refspecs, Remote, RemoteConnection, RemoteHead,
+    FetchOptions, PushOptions, Refspecs, Remote, RemoteConnection, RemoteHead, RemoteRedirect,
 };
-pub use crate::remote_callbacks::{Credentials, RemoteCallbacks};
+pub use crate::remote_callbacks::{CertificateCheckStatus, Credentials, RemoteCallbacks};
 pub use crate::remote_callbacks::{TransportMessage, UpdateTips};
 pub use crate::repo::{Repository, RepositoryInitOptions};
 pub use crate::revert::RevertOptions;
@@ -210,6 +215,8 @@ pub enum ErrorCode {
     IndexDirty,
     /// Patch application failed
     ApplyFail,
+    /// The object is not owned by the current user
+    Owner,
 }
 
 /// An enumeration of possible categories of things that can have
@@ -307,7 +314,7 @@ pub enum RepositoryState {
 }
 
 /// An enumeration of the possible directions for a remote.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Direction {
     /// Data will be fetched (read) from this remote.
     Fetch,
@@ -317,7 +324,7 @@ pub enum Direction {
 
 /// An enumeration of the operations that can be performed for the `reset`
 /// method on a `Repository`.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ResetType {
     /// Move the head to the given commit.
     Soft,
@@ -633,6 +640,17 @@ impl MergePreference {
     is_bit_set!(is_fastforward_only, MergePreference::FASTFORWARD_ONLY);
 }
 
+bitflags! {
+    /// Flags controlling the behavior of ODB lookup operations
+    pub struct OdbLookupFlags: u32 {
+        /// Don't call `git_odb_refresh` if the lookup fails. Useful when doing
+        /// a batch of lookup operations for objects that may legitimately not
+        /// exist. When using this flag, you may wish to manually call
+        /// `git_odb_refresh` before processing a batch of objects.
+        const NO_REFRESH = raw::GIT_ODB_LOOKUP_NO_REFRESH as u32;
+    }
+}
+
 #[cfg(test)]
 #[macro_use]
 mod test;
@@ -660,6 +678,7 @@ mod config;
 mod cred;
 mod describe;
 mod diff;
+mod email;
 mod error;
 mod index;
 mod indexer;
@@ -1209,7 +1228,7 @@ impl SubmoduleStatus {
 /// These values represent settings for the `submodule.$name.ignore`
 /// configuration value which says how deeply to look at the working
 /// directory when getting the submodule status.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SubmoduleIgnore {
     /// Use the submodule's configuration
     Unspecified,
@@ -1229,7 +1248,7 @@ pub enum SubmoduleIgnore {
 /// configuration value which says how to handle `git submodule update`
 /// for this submodule. The value is usually set in the ".gitmodules"
 /// file and copied to ".git/config" when the submodule is initialized.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SubmoduleUpdate {
     /// The default; when a submodule is updated, checkout the new detached
     /// HEAD to the submodule directory.
@@ -1318,7 +1337,7 @@ impl CheckoutNotificationType {
 }
 
 /// Possible output formats for diff data
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DiffFormat {
     /// full git diff
     Patch,
@@ -1382,7 +1401,7 @@ pub enum FetchPrune {
 }
 
 #[allow(missing_docs)]
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum StashApplyProgress {
     /// None
     None,

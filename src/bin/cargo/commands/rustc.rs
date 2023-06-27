@@ -3,13 +3,14 @@ use cargo::ops;
 use cargo::util::interning::InternedString;
 
 const PRINT_ARG_NAME: &str = "print";
+const CRATE_TYPE_ARG_NAME: &str = "crate-type";
 
 pub fn cli() -> App {
     subcommand("rustc")
-        .setting(AppSettings::TrailingVarArg)
+        .trailing_var_arg(true)
         .about("Compile a package, and pass extra options to the compiler")
-        .arg(opt("quiet", "No output printed to stdout").short("q"))
-        .arg(Arg::with_name("args").multiple(true).help("Rustc flags"))
+        .arg_quiet()
+        .arg(Arg::new("args").multiple_values(true).help("Rustc flags"))
         .arg_package("Package to build")
         .arg_jobs()
         .arg_targets_all(
@@ -35,21 +36,27 @@ pub fn cli() -> App {
             )
             .value_name("INFO"),
         )
+        .arg(multi_opt(
+            CRATE_TYPE_ARG_NAME,
+            "CRATE-TYPE",
+            "Comma separated list of types of crates for the compiler to emit",
+        ))
         .arg_target_dir()
         .arg_manifest_path()
         .arg_message_format()
         .arg_unit_graph()
         .arg_ignore_rust_version()
         .arg_future_incompat_report()
+        .arg_timings()
         .after_help("Run `cargo help rustc` for more detailed information.\n")
 }
 
-pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
+pub fn exec(config: &mut Config, args: &ArgMatches) -> CliResult {
     let ws = args.workspace(config)?;
     // This is a legacy behavior that changes the behavior based on the profile.
     // If we want to support this more formally, I think adding a --mode flag
     // would be warranted.
-    let mode = match args.value_of("profile") {
+    let mode = match args.get_one::<String>("profile").map(String::as_str) {
         Some("test") => CompileMode::Test,
         Some("bench") => CompileMode::Bench,
         Some("check") => CompileMode::Check { test: false },
@@ -70,13 +77,20 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     } else {
         Some(target_args)
     };
-    if let Some(opt_value) = args.value_of(PRINT_ARG_NAME) {
+    if let Some(opt_value) = args.get_one::<String>(PRINT_ARG_NAME) {
         config
             .cli_unstable()
             .fail_if_stable_opt(PRINT_ARG_NAME, 9357)?;
         ops::print(&ws, &compile_opts, opt_value)?;
-    } else {
-        ops::compile(&ws, &compile_opts)?;
+        return Ok(());
     }
+    let crate_types = values(args, CRATE_TYPE_ARG_NAME);
+    compile_opts.target_rustc_crate_types = if crate_types.is_empty() {
+        None
+    } else {
+        Some(crate_types)
+    };
+    ops::compile(&ws, &compile_opts)?;
+
     Ok(())
 }
