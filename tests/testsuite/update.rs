@@ -344,7 +344,6 @@ fn change_package_version() {
 
 #[cargo_test]
 fn update_precise() {
-    Package::new("log", "0.1.0").publish();
     Package::new("serde", "0.1.0").publish();
     Package::new("serde", "0.2.1").publish();
 
@@ -387,6 +386,150 @@ fn update_precise() {
             "\
 [UPDATING] `[..]` index
 [UPDATING] serde v0.2.1 -> v0.2.0
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn update_precise_do_not_force_update_deps() {
+    Package::new("log", "0.1.0").publish();
+    Package::new("serde", "0.2.1").dep("log", "0.1").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                serde = "0.2"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build").run();
+
+    Package::new("log", "0.1.1").publish();
+    Package::new("serde", "0.2.2").dep("log", "0.1").publish();
+
+    p.cargo("update -p serde:0.2.1 --precise 0.2.2")
+        .with_stderr(
+            "\
+[UPDATING] `[..]` index
+[UPDATING] serde v0.2.1 -> v0.2.2
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn update_precise_without_package() {
+    Package::new("serde", "0.2.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                serde = "0.2"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build").run();
+
+    Package::new("serde", "0.2.1").publish();
+    Package::new("serde", "0.3.0").publish();
+
+    p.cargo("update --precise 0.3.0")
+        .with_stderr(
+            "\
+[WARNING] precise is only supported with \"--package <SPEC>\", this will become a hard error in a future release.
+[UPDATING] `[..]` index
+[UPDATING] serde v0.2.0 -> v0.2.1
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn update_aggressive() {
+    Package::new("log", "0.1.0").publish();
+    Package::new("serde", "0.2.1").dep("log", "0.1").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                serde = "0.2"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build").run();
+
+    Package::new("log", "0.1.1").publish();
+    Package::new("serde", "0.2.2").dep("log", "0.1").publish();
+
+    p.cargo("update -p serde:0.2.1 --aggressive")
+        .with_stderr(
+            "\
+[UPDATING] `[..]` index
+[UPDATING] log v0.1.0 -> v0.1.1
+[UPDATING] serde v0.2.1 -> v0.2.2
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn update_aggressive_without_package() {
+    Package::new("serde", "0.2.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                serde = "0.2"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build").run();
+
+    Package::new("serde", "0.2.1").publish();
+
+    p.cargo("update --aggressive")
+        .with_stderr(
+            "\
+[WARNING] aggressive is only supported with \"--package <SPEC>\", this will become a hard error in a future release.
+[UPDATING] `[..]` index
+[UPDATING] serde v0.2.0 -> v0.2.1
 ",
         )
         .run();
@@ -464,6 +607,7 @@ fn update_precise_first_run() {
       "name": "bar",
       "readme": null,
       "repository": null,
+      "rust_version": null,
       "source": null,
       "targets": [
         {
@@ -504,6 +648,7 @@ fn update_precise_first_run() {
       "name": "serde",
       "readme": null,
       "repository": null,
+      "rust_version": null,
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "targets": [
         {
@@ -677,4 +822,82 @@ fn workspace_only() {
     assert!(lock2.contains("0.0.2"));
     assert!(!lock1.contains("0.0.2"));
     assert!(!lock2.contains("0.0.1"));
+}
+
+#[cargo_test]
+fn precise_with_build_metadata() {
+    // +foo syntax shouldn't be necessary with --precise
+    Package::new("bar", "0.1.0+extra-stuff.0").publish();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = "0.1"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+    p.cargo("generate-lockfile").run();
+    Package::new("bar", "0.1.1+extra-stuff.1").publish();
+    Package::new("bar", "0.1.2+extra-stuff.2").publish();
+
+    p.cargo("update -p bar --precise 0.1")
+        .with_status(101)
+        .with_stderr(
+            "\
+error: invalid version format for precise version `0.1`
+
+Caused by:
+  unexpected end of input while parsing minor version number
+",
+        )
+        .run();
+
+    p.cargo("update -p bar --precise 0.1.1+does-not-match")
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] [..] index
+error: no matching package named `bar` found
+location searched: registry `crates-io`
+required by package `foo v0.1.0 ([ROOT]/foo)`
+",
+        )
+        .run();
+
+    p.cargo("update -p bar --precise 0.1.1")
+        .with_stderr(
+            "\
+[UPDATING] [..] index
+[UPDATING] bar v0.1.0+extra-stuff.0 -> v0.1.1+extra-stuff.1
+",
+        )
+        .run();
+
+    Package::new("bar", "0.1.3").publish();
+    p.cargo("update -p bar --precise 0.1.3+foo")
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] [..] index
+error: no matching package named `bar` found
+location searched: registry `crates-io`
+required by package `foo v0.1.0 ([ROOT]/foo)`
+",
+        )
+        .run();
+
+    p.cargo("update -p bar --precise 0.1.3")
+        .with_stderr(
+            "\
+[UPDATING] [..] index
+[UPDATING] bar v0.1.1+extra-stuff.1 -> v0.1.3
+",
+        )
+        .run();
 }

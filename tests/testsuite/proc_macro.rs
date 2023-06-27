@@ -1,6 +1,5 @@
 //! Tests for proc-macros.
 
-use cargo_test_support::is_nightly;
 use cargo_test_support::project;
 
 #[cargo_test]
@@ -203,13 +202,8 @@ fn impl_and_derive() {
     p.cargo("run").with_stdout("X { success: true }").run();
 }
 
-#[cargo_test]
+#[cargo_test(nightly, reason = "plugins are unstable")]
 fn plugin_and_proc_macro() {
-    if !is_nightly() {
-        // plugins are unstable
-        return;
-    }
-
     let p = project()
         .file(
             "Cargo.toml",
@@ -384,6 +378,31 @@ fn proc_macro_crate_type_warning() {
     foo.cargo("build")
         .with_stderr_contains(
             "[WARNING] library `foo` should only specify `proc-macro = true` instead of setting `crate-type`")
+        .run();
+}
+
+#[cargo_test]
+fn proc_macro_conflicting_warning() {
+    let foo = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                [lib]
+                proc-macro = false
+                proc_macro = true
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    foo.cargo("build")
+        .with_stderr_contains(
+"[WARNING] conflicting between `proc-macro` and `proc_macro` in the `foo` library target.\n
+        `proc_macro` is ignored and not recommended for use in the future",
+        )
         .run();
 }
 

@@ -222,9 +222,9 @@ explaining the format of the entry.
             // this is the new name. The original package name is stored in
             // the `package` field.
             "name": "rand",
-            // The semver requirement for this dependency.
+            // The SemVer requirement for this dependency.
             // This must be a valid version requirement defined at
-            // https://github.com/steveklabnik/semver#requirements.
+            // https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html.
             "req": "^0.6",
             // Array of features (as strings) enabled for this dependency.
             "features": ["i128_support"],
@@ -263,7 +263,45 @@ explaining the format of the entry.
     "yanked": false,
     // The `links` string value from the package's manifest, or null if not
     // specified. This field is optional and defaults to null.
-    "links": null
+    "links": null,
+    // An unsigned 32-bit integer value indicating the schema version of this
+    // entry.
+    //
+    // If this not specified, it should be interpreted as the default of 1.
+    //
+    // Cargo (starting with version 1.51) will ignore versions it does not
+    // recognize. This provides a method to safely introduce changes to index
+    // entries and allow older versions of cargo to ignore newer entries it
+    // doesn't understand. Versions older than 1.51 ignore this field, and
+    // thus may misinterpret the meaning of the index entry.
+    //
+    // The current values are:
+    //
+    // * 1: The schema as documented here, not including newer additions.
+    //      This is honored in Rust version 1.51 and newer.
+    // * 2: The addition of the `features2` field.
+    //      This is honored in Rust version 1.60 and newer.
+    "v": 2,
+    // This optional field contains features with new, extended syntax.
+    // Specifically, namespaced features (`dep:`) and weak dependencies
+    // (`pkg?/feat`).
+    //
+    // This is separated from `features` because versions older than 1.19
+    // will fail to load due to not being able to parse the new syntax, even
+    // with a `Cargo.lock` file.
+    //
+    // Cargo will merge any values listed here with the "features" field.
+    //
+    // If this field is included, the "v" field should be set to at least 2.
+    //
+    // Registries are not required to use this field for extended feature
+    // syntax, they are allowed to include those in the "features" field.
+    // Using this is only necessary if the registry wants to support cargo
+    // versions older than 1.19, which in practice is only crates.io since
+    // those older versions do not support other registries.
+    "features2": {
+        "serde": ["dep:serde", "chrono?/serde"]
+    }
 }
 ```
 
@@ -282,9 +320,10 @@ visit the registry's website to obtain a token, and Cargo can store the token
 using the [`cargo login`] command, or by passing the token on the
 command-line.
 
-Responses use a 200 response code for both success and errors. Cargo looks at
-the JSON response to determine if there was success or failure. Failure
-responses have a JSON object with the following structure:
+Responses use the 200 response code for success.
+Errors should use an appropriate response code, such as 404.
+Failure
+responses should have a JSON object with the following structure:
 
 ```javascript
 {
@@ -298,10 +337,10 @@ responses have a JSON object with the following structure:
 }
 ```
 
-Servers may also respond with a 404 response code to indicate the requested
-resource is not found (for example, an unknown crate name). However, using a
-200 response with an `errors` object allows a registry to provide a more
-detailed error message if desired.
+If the response has this structure Cargo will display the detailed message to the user, even if the response code is 200.
+If the response code indicates an error and the content does not have this structure, Cargo will display to the user a
+ message intended to help debugging the server error. A server returning an `errors` object allows a registry to provide a more
+detailed or user-centric error message.
 
 For backwards compatibility, servers should ignore any unexpected query
 parameters or JSON fields. If a JSON field is missing, it should be assumed to

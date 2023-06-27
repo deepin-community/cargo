@@ -5,23 +5,23 @@ use cargo::ops::{self, PackageOpts};
 pub fn cli() -> App {
     subcommand("package")
         .about("Assemble the local package into a distributable tarball")
-        .arg(opt("quiet", "No output printed to stdout").short("q"))
+        .arg_quiet()
         .arg(
-            opt(
+            flag(
                 "list",
                 "Print files included in a package without making one",
             )
-            .short("l"),
+            .short('l'),
         )
-        .arg(opt(
+        .arg(flag(
             "no-verify",
             "Don't verify the contents by building them",
         ))
-        .arg(opt(
+        .arg(flag(
             "no-metadata",
             "Ignore warnings about a lack of human-usable metadata",
         ))
-        .arg(opt(
+        .arg(flag(
             "allow-dirty",
             "Allow dirty working directories to be packaged",
         ))
@@ -38,7 +38,7 @@ pub fn cli() -> App {
         .after_help("Run `cargo help package` for more detailed information.\n")
 }
 
-pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
+pub fn exec(config: &mut Config, args: &ArgMatches) -> CliResult {
     let ws = args.workspace(config)?;
     let specs = args.packages_from_flags()?;
 
@@ -46,13 +46,14 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
         &ws,
         &PackageOpts {
             config,
-            verify: !args.is_present("no-verify"),
-            list: args.is_present("list"),
-            check_metadata: !args.is_present("no-metadata"),
-            allow_dirty: args.is_present("allow-dirty"),
+            verify: !args.flag("no-verify"),
+            list: args.flag("list"),
+            check_metadata: !args.flag("no-metadata"),
+            allow_dirty: args.flag("allow-dirty"),
             to_package: specs,
             targets: args.targets(),
             jobs: args.jobs()?,
+            keep_going: args.keep_going(),
             cli_features: args.cli_features()?,
         },
     )?;

@@ -120,6 +120,35 @@ fn non_virtual_default_members_build_other_member() {
 }
 
 #[cargo_test]
+fn non_virtual_default_members_build_root_project() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+                authors = []
+
+                [workspace]
+                members = ["bar"]
+                default-members = ["."]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "pub fn bar() {}")
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "[..] Compiling foo v0.1.0 ([..])\n\
+             [..] Finished dev [unoptimized + debuginfo] target(s) in [..]\n",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn inferred_root() {
     let p = project()
         .file(
@@ -1065,7 +1094,12 @@ Caused by:
   could not parse input as TOML
 
 Caused by:
-  expected an equals, found eof at line 1 column 5
+  TOML parse error at line 1, column 5
+    |
+  1 | asdf
+    |     ^
+  Unexpected end of input
+  Expected `.` or `=`
      Created binary (application) `bar` package
 ",
         )
@@ -1216,7 +1250,7 @@ fn workspace_in_git() {
 }
 
 #[cargo_test]
-fn lockfile_can_specify_nonexistant_members() {
+fn lockfile_can_specify_nonexistent_members() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -2448,4 +2482,51 @@ fn virtual_primary_package_env_var() {
     // Again, this time selecting a specific crate
     p.cargo("clean").run();
     p.cargo("test -p foo").run();
+}
+
+#[cargo_test]
+fn ensure_correct_workspace_when_nested() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+
+                [project]
+                name = "bar"
+                version = "0.1.0"
+                authors = []
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "sub/Cargo.toml",
+            r#"
+                [workspace]
+                members = ["foo"]
+            "#,
+        )
+        .file(
+            "sub/foo/Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+                authors = []
+
+                [dependencies]
+                bar = { path = "../.."}
+            "#,
+        )
+        .file("sub/foo/src/main.rs", "fn main() {}");
+    let p = p.build();
+    p.cargo("tree")
+        .cwd("sub/foo")
+        .with_stdout(
+            "\
+foo v0.1.0 ([..]/foo/sub/foo)
+└── bar v0.1.0 ([..]/foo)\
+        ",
+        )
+        .run();
 }

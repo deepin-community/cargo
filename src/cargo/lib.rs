@@ -5,17 +5,84 @@
 // Due to some of the default clippy lints being somewhat subjective and not
 // necessarily an improvement, we prefer to not use them at this time.
 #![allow(clippy::all)]
-#![warn(clippy::needless_borrow)]
-#![warn(clippy::redundant_clone)]
+#![allow(rustdoc::private_intra_doc_links)]
+
+//! # Cargo as a library
+//!
+//! Cargo, the Rust package manager, is also provided as a library.
+//!
+//! There are two places you can find API documentation of cargo-the-library,
+//!
+//! - <https://docs.rs/cargo> and
+//! - <https://doc.crates.io/contrib/apidoc/cargo>.
+//!
+//! Each of them targets on a slightly different audience.
+//!
+//! ## For external tool developers
+//!
+//! The documentation on <https://docs.rs/cargo> contains public-facing items in cargo-the-library.
+//! External tool developers may find it useful when trying to reuse existing building blocks from Cargo.
+//! However, using Cargo as a library has drawbacks, especially cargo-the-library is unstable,
+//! and there is no clear path to stabilize it soon at the time of writing.
+//! See [The Cargo Book: External tools] for more on this topic.
+//!
+//! Cargo API documentation on docs.rs gets updates along with each Rust release.
+//! Its version always has a 0 major version to state it is unstable.
+//! The minor version is always +1 of rustc's minor version
+//! (that is, `cargo 0.66.0` corresponds to `rustc 1.65`).
+//!
+//! ## For Cargo contributors
+//!
+//! The documentation on <https://doc.crates.io/contrib/apidoc/cargo> contains all items in Cargo.
+//! Contributors of Cargo may find it useful as a reference of Cargo's implementation details.
+//! It's built with `--document-private-items` rustdoc flag,
+//! so you might expect to see some noise and strange items here.
+//! The Cargo team and contributors strive for jotting down every details
+//! from their brains in each issue and PR.
+//! However, something might just disappear in the air with no reason.
+//! This documentation can be seen as their extended minds,
+//! sharing designs and hacks behind both public and private interfaces.
+//!
+//! If you are just diving into Cargo internals, [Cargo Architecture Overview]
+//! is the best material to get a broader context of how Cargo works under the hood.
+//! Things also worth a read are important concepts reside in source code,
+//! which Cargo developers have been crafting for a while, namely
+//!
+//! - [`cargo::core::resolver`](crate::core::resolver),
+//! - [`cargo::core::compiler::fingerprint`](core/compiler/fingerprint/index.html),
+//! - [`cargo::util::config`](crate::util::config),
+//! - [`cargo::ops::fix`](ops/fix/index.html), and
+//! - [`cargo::sources::registry`](crate::sources::registry).
+//!
+//! This API documentation is published on each push of rust-lang/cargo master branch.
+//! In other words, it always reflects the latest doc comments in source code on master branch.
+//!
+//! ## Contribute to Cargo documentations
+//!
+//! The Cargo team always continues improving all external and internal documentations.
+//! If you spot anything could be better, don't hesitate to discuss with the team on
+//! Zulip [`t-cargo` stream], or [submit an issue] right on GitHub.
+//! There is also an issue label [`A-documenting-cargo-itself`],
+//! which is generally for documenting user-facing [The Cargo Book],
+//! but the Cargo team is welcome any form of enhancement for the [Cargo Contributor Guide]
+//! and this API documentation as well.
+//!
+//! [The Cargo Book: External tools]: https://doc.rust-lang.org/stable/cargo/reference/external-tools.html
+//! [Cargo Architecture Overview]: https://doc.crates.io/contrib/architecture
+//! [`t-cargo` stream]: https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo
+//! [submit an issue]: https://github.com/rust-lang/cargo/issues/new/choose
+//! [`A-documenting-cargo-itself`]: https://github.com/rust-lang/cargo/labels/A-documenting-cargo-itself
+//! [The Cargo Book]: https://doc.rust-lang.org/cargo/
+//! [Cargo Contributor Guide]: https://doc.crates.io/contrib/
 
 use crate::core::shell::Verbosity::Verbose;
 use crate::core::Shell;
 use anyhow::Error;
 use log::debug;
-use std::fmt;
 
-pub use crate::util::errors::{InternalError, VerboseError};
+pub use crate::util::errors::{AlreadyPrintedError, InternalError, VerboseError};
 pub use crate::util::{indented_lines, CargoResult, CliError, CliResult, Config};
+pub use crate::version::version;
 
 pub const CARGO_ENV: &str = "CARGO";
 
@@ -26,55 +93,16 @@ pub mod core;
 pub mod ops;
 pub mod sources;
 pub mod util;
-
-pub struct CommitInfo {
-    pub short_commit_hash: String,
-    pub commit_hash: String,
-    pub commit_date: String,
-}
-
-pub struct CfgInfo {
-    // Information about the Git repository we may have been built from.
-    pub commit_info: Option<CommitInfo>,
-    // The release channel we were built for.
-    pub release_channel: String,
-}
-
-pub struct VersionInfo {
-    pub major: u8,
-    pub minor: u8,
-    pub patch: u8,
-    pub pre_release: Option<String>,
-    // Information that's only available when we were built with
-    // configure/make, rather than Cargo itself.
-    pub cfg_info: Option<CfgInfo>,
-}
-
-impl fmt::Display for VersionInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
-        if let Some(channel) = self.cfg_info.as_ref().map(|ci| &ci.release_channel) {
-            if channel != "stable" {
-                write!(f, "-{}", channel)?;
-                let empty = String::new();
-                write!(f, "{}", self.pre_release.as_ref().unwrap_or(&empty))?;
-            }
-        };
-
-        if let Some(ref cfg) = self.cfg_info {
-            if let Some(ref ci) = cfg.commit_info {
-                write!(f, " ({} {})", ci.short_commit_hash, ci.commit_date)?;
-            }
-        };
-        Ok(())
-    }
-}
+mod version;
 
 pub fn exit_with_error(err: CliError, shell: &mut Shell) -> ! {
     debug!("exit_with_error; err={:?}", err);
+
     if let Some(ref err) = err.error {
         if let Some(clap_err) = err.downcast_ref::<clap::Error>() {
-            clap_err.exit()
+            let exit_code = if clap_err.use_stderr() { 1 } else { 0 };
+            let _ = clap_err.print();
+            std::process::exit(exit_code)
         }
     }
 
@@ -115,86 +143,27 @@ pub fn display_warning_with_error(warning: &str, err: &Error, shell: &mut Shell)
 }
 
 fn _display_error(err: &Error, shell: &mut Shell, as_err: bool) -> bool {
-    let verbosity = shell.verbosity();
-    let is_verbose = |e: &(dyn std::error::Error + 'static)| -> bool {
-        verbosity != Verbose && e.downcast_ref::<VerboseError>().is_some()
-    };
-    // Generally the top error shouldn't be verbose, but check it anyways.
-    if is_verbose(err.as_ref()) {
-        return true;
-    }
-    if as_err {
-        drop(shell.error(&err));
-    } else {
-        drop(writeln!(shell.err(), "{}", err));
-    }
-    for cause in err.chain().skip(1) {
-        // If we're not in verbose mode then print remaining errors until one
+    for (i, err) in err.chain().enumerate() {
+        // If we're not in verbose mode then only print cause chain until one
         // marked as `VerboseError` appears.
-        if is_verbose(cause) {
+        //
+        // Generally the top error shouldn't be verbose, but check it anyways.
+        if shell.verbosity() != Verbose && err.is::<VerboseError>() {
             return true;
         }
-        drop(writeln!(shell.err(), "\nCaused by:"));
-        drop(write!(
-            shell.err(),
-            "{}",
-            indented_lines(&cause.to_string())
-        ));
+        if err.is::<AlreadyPrintedError>() {
+            break;
+        }
+        if i == 0 {
+            if as_err {
+                drop(shell.error(&err));
+            } else {
+                drop(writeln!(shell.err(), "{}", err));
+            }
+        } else {
+            drop(writeln!(shell.err(), "\nCaused by:"));
+            drop(write!(shell.err(), "{}", indented_lines(&err.to_string())));
+        }
     }
     false
-}
-
-pub fn version() -> VersionInfo {
-    macro_rules! option_env_str {
-        ($name:expr) => {
-            option_env!($name).map(|s| s.to_string())
-        };
-    }
-
-    // So this is pretty horrible...
-    // There are two versions at play here:
-    //   - version of cargo-the-binary, which you see when you type `cargo --version`
-    //   - version of cargo-the-library, which you download from crates.io for use
-    //     in your packages.
-    //
-    // We want to make the `binary` version the same as the corresponding Rust/rustc release.
-    // At the same time, we want to keep the library version at `0.x`, because Cargo as
-    // a library is (and probably will always be) unstable.
-    //
-    // Historically, Cargo used the same version number for both the binary and the library.
-    // Specifically, rustc 1.x.z was paired with cargo 0.x+1.w.
-    // We continue to use this scheme for the library, but transform it to 1.x.w for the purposes
-    // of `cargo --version`.
-    let major = 1;
-    let minor = env!("CARGO_PKG_VERSION_MINOR").parse::<u8>().unwrap() - 1;
-    let patch = env!("CARGO_PKG_VERSION_PATCH").parse::<u8>().unwrap();
-
-    match option_env!("CFG_RELEASE_CHANNEL") {
-        // We have environment variables set up from configure/make.
-        Some(_) => {
-            let commit_info = option_env!("CFG_COMMIT_HASH").map(|s| CommitInfo {
-                commit_hash: s.to_string(),
-                short_commit_hash: option_env_str!("CFG_SHORT_COMMIT_HASH").unwrap(),
-                commit_date: option_env_str!("CFG_COMMIT_DATE").unwrap(),
-            });
-            VersionInfo {
-                major,
-                minor,
-                patch,
-                pre_release: option_env_str!("CARGO_PKG_VERSION_PRE"),
-                cfg_info: Some(CfgInfo {
-                    release_channel: option_env_str!("CFG_RELEASE_CHANNEL").unwrap(),
-                    commit_info,
-                }),
-            }
-        }
-        // We are being compiled by Cargo itself.
-        None => VersionInfo {
-            major,
-            minor,
-            patch,
-            pre_release: option_env_str!("CARGO_PKG_VERSION_PRE"),
-            cfg_info: None,
-        },
-    }
 }

@@ -2,6 +2,7 @@
 
 
 
+
 ## NAME
 
 cargo-bench - Execute benchmarks of a package
@@ -28,10 +29,11 @@ similarly named benchmarks like `foobar`):
 
     cargo bench -- foo --exact
 
-Benchmarks are built with the `--test` option to `rustc` which creates an
-executable with a `main` function that automatically runs all functions
-annotated with the `#[bench]` attribute. Cargo passes the `--bench` flag to
-the test harness to tell it to run only benchmarks.
+Benchmarks are built with the `--test` option to `rustc` which creates a
+special executable by linking your code with libtest. The executable
+automatically runs all functions annotated with the `#[bench]` attribute.
+Cargo passes the `--bench` flag to the test harness to tell it to run
+only benchmarks.
 
 The libtest harness may be disabled by setting `harness = false` in the target
 manifest settings, in which case your code will need to provide its own `main`
@@ -45,6 +47,14 @@ function to handle running benchmarks.
 > [crates.io](https://crates.io/keywords/benchmark) that may help with
 > running benchmarks on the stable channel, such as
 > [Criterion](https://crates.io/crates/criterion).
+
+By default, `cargo bench` uses the [`bench` profile], which enables
+optimizations and disables debugging information. If you need to debug a
+benchmark, you can use the `--profile=dev` command-line option to switch to
+the dev profile. You can then run the debug-enabled benchmark within a
+debugger.
+
+[`bench` profile]: ../reference/profiles.html#bench
 
 ## OPTIONS
 
@@ -130,6 +140,16 @@ them from being benchmarked by default. Target selection options that take a
 target by name ignore the `bench` flag and will always benchmark the given
 target.
 
+Binary targets are automatically built if there is an integration test or
+benchmark being selected to benchmark. This allows an integration
+test to execute the binary to exercise and test its behavior. 
+The `CARGO_BIN_EXE_<name>`
+[environment variable](../reference/environment-variables.html#environment-variables-cargo-sets-for-crates)
+is set when the integration test is built so that it can use the
+[`env` macro](https://doc.rust-lang.org/std/macro.env.html) to locate the
+executable.
+
+
 Passing target selection flags will benchmark only the specified
 targets. 
 
@@ -211,6 +231,7 @@ for more details.
 
 <dl>
 
+<dt class="option-term" id="option-cargo-bench--F"><a class="option-anchor" href="#option-cargo-bench--F"></a><code>-F</code> <em>features</em></dt>
 <dt class="option-term" id="option-cargo-bench---features"><a class="option-anchor" href="#option-cargo-bench---features"></a><code>--features</code> <em>features</em></dt>
 <dd class="option-desc">Space or comma separated list of features to activate. Features of workspace
 members may be enabled with <code>package-name/feature-name</code> syntax. This flag may
@@ -233,10 +254,9 @@ be specified multiple times, which enables all specified features.</dd>
 <dl>
 
 <dt class="option-term" id="option-cargo-bench---target"><a class="option-anchor" href="#option-cargo-bench---target"></a><code>--target</code> <em>triple</em></dt>
-<dd class="option-desc">Benchmark for the given architecture. The default is the host
-architecture. The general format of the triple is
+<dd class="option-desc">Benchmark for the given architecture. The default is the host architecture. The general format of the triple is
 <code>&lt;arch&gt;&lt;sub&gt;-&lt;vendor&gt;-&lt;sys&gt;-&lt;abi&gt;</code>. Run <code>rustc --print target-list</code> for a
-list of supported targets.</p>
+list of supported targets. This flag may be specified multiple times.</p>
 <p>This may also be specified with the <code>build.target</code>
 <a href="../reference/config.html">config value</a>.</p>
 <p>Note that specifying this flag makes Cargo run in a different mode where the
@@ -245,9 +265,34 @@ target artifacts are placed in a separate directory. See the
 
 
 
+<dt class="option-term" id="option-cargo-bench---profile"><a class="option-anchor" href="#option-cargo-bench---profile"></a><code>--profile</code> <em>name</em></dt>
+<dd class="option-desc">Benchmark with the given profile.
+See the <a href="../reference/profiles.html">the reference</a> for more details on profiles.</dd>
+
+
+
 <dt class="option-term" id="option-cargo-bench---ignore-rust-version"><a class="option-anchor" href="#option-cargo-bench---ignore-rust-version"></a><code>--ignore-rust-version</code></dt>
 <dd class="option-desc">Benchmark the target even if the selected Rust compiler is older than the
 required Rust version as configured in the project's <code>rust-version</code> field.</dd>
+
+
+
+<dt class="option-term" id="option-cargo-bench---timings=fmts"><a class="option-anchor" href="#option-cargo-bench---timings=fmts"></a><code>--timings=</code><em>fmts</em></dt>
+<dd class="option-desc">Output information how long each compilation takes, and track concurrency
+information over time. Accepts an optional comma-separated list of output
+formats; <code>--timings</code> without an argument will default to <code>--timings=html</code>.
+Specifying an output format (rather than the default) is unstable and requires
+<code>-Zunstable-options</code>. Valid output formats:</p>
+<ul>
+<li><code>html</code> (unstable, requires <code>-Zunstable-options</code>): Write a human-readable file <code>cargo-timing.html</code> to the
+<code>target/cargo-timings</code> directory with a report of the compilation. Also write
+a report to the same directory with a timestamp in the filename if you want
+to look at older runs. HTML output is suitable for human consumption only,
+and does not provide machine-readable timing data.</li>
+<li><code>json</code> (unstable, requires <code>-Zunstable-options</code>): Emit machine-readable JSON
+information about timing information.</li>
+</ul></dd>
+
 
 
 
@@ -285,7 +330,9 @@ May also be specified with the <code>term.verbose</code>
 
 <dt class="option-term" id="option-cargo-bench--q"><a class="option-anchor" href="#option-cargo-bench--q"></a><code>-q</code></dt>
 <dt class="option-term" id="option-cargo-bench---quiet"><a class="option-anchor" href="#option-cargo-bench---quiet"></a><code>--quiet</code></dt>
-<dd class="option-desc">No output printed to stdout.</dd>
+<dd class="option-desc">Do not print cargo log messages.
+May also be specified with the <code>term.quiet</code>
+<a href="../reference/config.html">config value</a>.</dd>
 
 
 <dt class="option-term" id="option-cargo-bench---color"><a class="option-anchor" href="#option-cargo-bench---color"></a><code>--color</code> <em>when</em></dt>
@@ -317,7 +364,7 @@ the &quot;short&quot; rendering from rustc. Cannot be used with <code>human</cod
 <li><code>json-diagnostic-rendered-ansi</code>: Ensure the <code>rendered</code> field of JSON messages
 contains embedded ANSI color codes for respecting rustc's default color
 scheme. Cannot be used with <code>human</code> or <code>short</code>.</li>
-<li><code>json-render-diagnostics</code>: Instruct Cargo to not include rustc diagnostics in
+<li><code>json-render-diagnostics</code>: Instruct Cargo to not include rustc diagnostics
 in JSON messages printed, but instead Cargo itself should render the
 JSON diagnostics coming from rustc. Cargo's own JSON diagnostics and others
 coming from rustc are still emitted. Cannot be used with <code>human</code> or <code>short</code>.</li>
@@ -374,6 +421,12 @@ See the <a href="https://rust-lang.github.io/rustup/overrides.html">rustup docum
 for more information about how toolchain overrides work.</dd>
 
 
+<dt class="option-term" id="option-cargo-bench---config"><a class="option-anchor" href="#option-cargo-bench---config"></a><code>--config</code> <em>KEY=VALUE</em> or <em>PATH</em></dt>
+<dd class="option-desc">Overrides a Cargo configuration value. The argument should be in TOML syntax of <code>KEY=VALUE</code>,
+or provided as a path to an extra configuration file. This flag may be specified multiple times.
+See the <a href="../reference/config.html#command-line-overrides">command-line overrides section</a> for more information.</dd>
+
+
 <dt class="option-term" id="option-cargo-bench--h"><a class="option-anchor" href="#option-cargo-bench--h"></a><code>-h</code></dt>
 <dt class="option-term" id="option-cargo-bench---help"><a class="option-anchor" href="#option-cargo-bench---help"></a><code>--help</code></dt>
 <dd class="option-desc">Prints help information.</dd>
@@ -397,27 +450,18 @@ Rust test harness runs benchmarks serially in a single thread.
 <dt class="option-term" id="option-cargo-bench---jobs"><a class="option-anchor" href="#option-cargo-bench---jobs"></a><code>--jobs</code> <em>N</em></dt>
 <dd class="option-desc">Number of parallel jobs to run. May also be specified with the
 <code>build.jobs</code> <a href="../reference/config.html">config value</a>. Defaults to
-the number of CPUs.</dd>
+the number of logical CPUs. If negative, it sets the maximum number of
+parallel jobs to the number of logical CPUs plus provided value.
+Should not be 0.</dd>
+
+
+<dt class="option-term" id="option-cargo-bench---keep-going"><a class="option-anchor" href="#option-cargo-bench---keep-going"></a><code>--keep-going</code></dt>
+<dd class="option-desc">Build as many crates in the dependency graph as possible, rather than aborting
+the build on the first one that fails to build. Unstable, requires
+<code>-Zunstable-options</code>.</dd>
 
 
 </dl>
-
-## PROFILES
-
-Profiles may be used to configure compiler options such as optimization levels
-and debug settings. See
-[the reference](../reference/profiles.html)
-for more details.
-
-Benchmarks are always built with the `bench` profile. Binary and lib targets
-are built separately as benchmarks with the `bench` profile. Library targets
-are built with the `release` profiles when linked to binaries and benchmarks.
-Dependencies use the `release` profile.
-
-If you need a debug build of a benchmark, try building it with
-[cargo-build(1)](cargo-build.html) which will use the `test` profile which is by default
-unoptimized and includes debug information. You can then run the debug-enabled
-benchmark manually.
 
 ## ENVIRONMENT
 

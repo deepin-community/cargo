@@ -1,6 +1,7 @@
 use crate::core::source::MaybePackage;
-use crate::core::{Dependency, Package, PackageId, Source, SourceId, Summary};
+use crate::core::{Dependency, Package, PackageId, QueryKind, Source, SourceId, Summary};
 use crate::util::errors::CargoResult;
+use std::task::Poll;
 
 use anyhow::Context as _;
 
@@ -41,35 +42,29 @@ impl<'cfg> Source for ReplacedSource<'cfg> {
         self.inner.requires_precise()
     }
 
-    fn query(&mut self, dep: &Dependency, f: &mut dyn FnMut(Summary)) -> CargoResult<()> {
+    fn query(
+        &mut self,
+        dep: &Dependency,
+        kind: QueryKind,
+        f: &mut dyn FnMut(Summary),
+    ) -> Poll<CargoResult<()>> {
         let (replace_with, to_replace) = (self.replace_with, self.to_replace);
         let dep = dep.clone().map_source(to_replace, replace_with);
 
         self.inner
-            .query(&dep, &mut |summary| {
+            .query(&dep, kind, &mut |summary| {
                 f(summary.map_source(replace_with, to_replace))
             })
-            .with_context(|| format!("failed to query replaced source {}", self.to_replace))?;
-        Ok(())
-    }
-
-    fn fuzzy_query(&mut self, dep: &Dependency, f: &mut dyn FnMut(Summary)) -> CargoResult<()> {
-        let (replace_with, to_replace) = (self.replace_with, self.to_replace);
-        let dep = dep.clone().map_source(to_replace, replace_with);
-
-        self.inner
-            .fuzzy_query(&dep, &mut |summary| {
-                f(summary.map_source(replace_with, to_replace))
+            .map_err(|e| {
+                e.context(format!(
+                    "failed to query replaced source {}",
+                    self.to_replace
+                ))
             })
-            .with_context(|| format!("failed to query replaced source {}", self.to_replace))?;
-        Ok(())
     }
 
-    fn update(&mut self) -> CargoResult<()> {
-        self.inner
-            .update()
-            .with_context(|| format!("failed to update replaced source {}", self.to_replace))?;
-        Ok(())
+    fn invalidate_cache(&mut self) {
+        self.inner.invalidate_cache()
     }
 
     fn download(&mut self, id: PackageId) -> CargoResult<MaybePackage> {
@@ -124,7 +119,13 @@ impl<'cfg> Source for ReplacedSource<'cfg> {
         self.inner.add_to_yanked_whitelist(&pkgs);
     }
 
-    fn is_yanked(&mut self, pkg: PackageId) -> CargoResult<bool> {
+    fn is_yanked(&mut self, pkg: PackageId) -> Poll<CargoResult<bool>> {
         self.inner.is_yanked(pkg)
+    }
+
+    fn block_until_ready(&mut self) -> CargoResult<()> {
+        self.inner
+            .block_until_ready()
+            .with_context(|| format!("failed to update replaced source {}", self.to_replace))
     }
 }

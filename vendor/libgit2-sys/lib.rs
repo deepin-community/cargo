@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/libgit2-sys/0.12")]
+#![doc(html_root_url = "https://docs.rs/libgit2-sys/0.14")]
 #![allow(non_camel_case_types, unused_extern_crates)]
 
 // This is required to link libz when libssh2-sys is not included.
@@ -143,7 +143,7 @@ pub struct git_signature {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct git_time {
     pub time: git_time_t,
     pub offset: c_int,
@@ -195,6 +195,7 @@ git_enum! {
         GIT_EMISMATCH = -33,
         GIT_EINDEXDIRTY = -34,
         GIT_EAPPLYFAIL = -35,
+        GIT_EOWNER = -36,
     }
 }
 
@@ -383,6 +384,7 @@ pub struct git_fetch_options {
     pub update_fetchhead: c_int,
     pub download_tags: git_remote_autotag_option_t,
     pub proxy_opts: git_proxy_options,
+    pub follow_redirects: git_remote_redirect_t,
     pub custom_headers: git_strarray,
 }
 
@@ -487,6 +489,10 @@ git_enum! {
         GIT_CERT_SSH_RAW_TYPE_UNKNOWN = 0,
         GIT_CERT_SSH_RAW_TYPE_RSA = 1,
         GIT_CERT_SSH_RAW_TYPE_DSS = 2,
+        GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_256 = 3,
+        GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_384 = 4,
+        GIT_CERT_SSH_RAW_TYPE_KEY_ECDSA_521 = 5,
+        GIT_CERT_SSH_RAW_TYPE_KEY_ED25519 = 6,
     }
 }
 
@@ -609,6 +615,7 @@ pub struct git_status_options {
     pub flags: c_uint,
     pub pathspec: git_strarray,
     pub baseline: *mut git_tree,
+    pub rename_threshold: u16,
 }
 
 #[repr(C)]
@@ -728,7 +735,7 @@ pub struct git_tree_update {
 #[derive(Copy, Clone)]
 pub struct git_buf {
     pub ptr: *mut c_char,
-    pub asize: size_t,
+    pub reserved: size_t,
     pub size: size_t,
 }
 
@@ -817,7 +824,7 @@ pub const GIT_INDEX_ENTRY_STAGEMASK: u16 = 0x3000;
 pub const GIT_INDEX_ENTRY_STAGESHIFT: u16 = 12;
 
 #[repr(C)]
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct git_index_time {
     pub seconds: i32,
     pub nanoseconds: u32,
@@ -951,6 +958,7 @@ pub struct git_push_options {
     pub pb_parallelism: c_uint,
     pub callbacks: git_remote_callbacks,
     pub proxy_opts: git_proxy_options,
+    pub follow_redirects: git_remote_redirect_t,
     pub custom_headers: git_strarray,
 }
 
@@ -1356,55 +1364,66 @@ pub type git_transport_cb = Option<
 #[repr(C)]
 pub struct git_transport {
     pub version: c_uint,
-    pub set_callbacks: Option<
-        extern "C" fn(
-            *mut git_transport,
-            git_transport_message_cb,
-            git_transport_message_cb,
-            git_transport_certificate_check_cb,
-            *mut c_void,
-        ) -> c_int,
-    >,
-    pub set_custom_headers: Option<extern "C" fn(*mut git_transport, *const git_strarray) -> c_int>,
     pub connect: Option<
         extern "C" fn(
-            *mut git_transport,
-            *const c_char,
-            git_cred_acquire_cb,
-            *mut c_void,
-            *const git_proxy_options,
-            c_int,
-            c_int,
+            transport: *mut git_transport,
+            url: *const c_char,
+            direction: c_int,
+            connect_opts: *const git_remote_connect_options,
         ) -> c_int,
     >,
+    pub set_connect_opts: Option<
+        extern "C" fn(
+            transport: *mut git_transport,
+            connect_opts: *const git_remote_connect_options,
+        ) -> c_int,
+    >,
+    pub capabilities:
+        Option<extern "C" fn(capabilities: *mut c_uint, transport: *mut git_transport) -> c_int>,
     pub ls: Option<
-        extern "C" fn(*mut *mut *const git_remote_head, *mut size_t, *mut git_transport) -> c_int,
+        extern "C" fn(
+            out: *mut *mut *const git_remote_head,
+            size: *mut size_t,
+            transport: *mut git_transport,
+        ) -> c_int,
     >,
-    pub push: Option<
-        extern "C" fn(*mut git_transport, *mut git_push, *const git_remote_callbacks) -> c_int,
-    >,
+    pub push: Option<extern "C" fn(transport: *mut git_transport, push: *mut git_push) -> c_int>,
     pub negotiate_fetch: Option<
         extern "C" fn(
-            *mut git_transport,
-            *mut git_repository,
-            *const *const git_remote_head,
-            size_t,
+            transport: *mut git_transport,
+            repo: *mut git_repository,
+            refs: *const *const git_remote_head,
+            count: size_t,
         ) -> c_int,
     >,
     pub download_pack: Option<
         extern "C" fn(
-            *mut git_transport,
-            *mut git_repository,
-            *mut git_indexer_progress,
-            git_indexer_progress_cb,
-            *mut c_void,
+            transport: *mut git_transport,
+            repo: *mut git_repository,
+            stats: *mut git_indexer_progress,
         ) -> c_int,
     >,
-    pub is_connected: Option<extern "C" fn(*mut git_transport) -> c_int>,
-    pub read_flags: Option<extern "C" fn(*mut git_transport, *mut c_int) -> c_int>,
-    pub cancel: Option<extern "C" fn(*mut git_transport)>,
-    pub close: Option<extern "C" fn(*mut git_transport) -> c_int>,
-    pub free: Option<extern "C" fn(*mut git_transport)>,
+    pub is_connected: Option<extern "C" fn(transport: *mut git_transport) -> c_int>,
+    pub cancel: Option<extern "C" fn(transport: *mut git_transport)>,
+    pub close: Option<extern "C" fn(transport: *mut git_transport) -> c_int>,
+    pub free: Option<extern "C" fn(transport: *mut git_transport)>,
+}
+
+#[repr(C)]
+pub struct git_remote_connect_options {
+    pub version: c_uint,
+    pub callbacks: git_remote_callbacks,
+    pub proxy_opts: git_proxy_options,
+    pub follow_redirects: git_remote_redirect_t,
+    pub custom_headers: git_strarray,
+}
+
+git_enum! {
+    pub enum git_remote_redirect_t {
+        GIT_REMOTE_REDIRECT_NONE = 1 << 0,
+        GIT_REMOTE_REDIRECT_INITIAL = 1 << 1,
+        GIT_REMOTE_REDIRECT_ALL = 1 << 2,
+    }
 }
 
 #[repr(C)]
@@ -1495,6 +1514,12 @@ pub struct git_odb_backend {
     pub freshen: Option<extern "C" fn(*mut git_odb_backend, *const git_oid) -> c_int>,
 
     pub free: Option<extern "C" fn(*mut git_odb_backend)>,
+}
+
+git_enum! {
+    pub enum git_odb_lookup_flags_t {
+        GIT_ODB_LOOKUP_NO_REFRESH = 1 << 0,
+    }
 }
 
 #[repr(C)]
@@ -1870,6 +1895,12 @@ git_enum! {
         GIT_OPT_ENABLE_HTTP_EXPECT_CONTINUE,
         GIT_OPT_GET_MWINDOW_FILE_LIMIT,
         GIT_OPT_SET_MWINDOW_FILE_LIMIT,
+        GIT_OPT_SET_ODB_PACKED_PRIORITY,
+        GIT_OPT_SET_ODB_LOOSE_PRIORITY,
+        GIT_OPT_GET_EXTENSIONS,
+        GIT_OPT_SET_EXTENSIONS,
+        GIT_OPT_GET_OWNER_VALIDATION,
+        GIT_OPT_SET_OWNER_VALIDATION,
     }
 }
 
@@ -1887,6 +1918,7 @@ pub struct git_worktree_add_options {
     pub version: c_uint,
     pub lock: c_int,
     pub reference: *mut git_reference,
+    pub checkout_options: git_checkout_options,
 }
 
 pub const GIT_WORKTREE_ADD_OPTIONS_VERSION: c_uint = 1;
@@ -1950,6 +1982,42 @@ git_enum! {
         GIT_FEATURE_HTTPS   = 1 << 1,
         GIT_FEATURE_SSH     = 1 << 2,
         GIT_FEATURE_NSEC    = 1 << 3,
+    }
+}
+
+#[repr(C)]
+pub struct git_message_trailer {
+    pub key: *const c_char,
+    pub value: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct git_message_trailer_array {
+    pub trailers: *mut git_message_trailer,
+    pub count: size_t,
+    pub _trailer_block: *mut c_char,
+}
+
+#[repr(C)]
+pub struct git_email_create_options {
+    pub version: c_uint,
+    pub flags: u32,
+    pub diff_opts: git_diff_options,
+    pub diff_find_opts: git_diff_find_options,
+    pub subject_prefix: *const c_char,
+    pub start_number: usize,
+    pub reroll_number: usize,
+}
+
+pub const GIT_EMAIL_CREATE_OPTIONS_VERSION: c_uint = 1;
+
+git_enum! {
+    pub enum git_email_create_flags_t {
+        GIT_EMAIL_CREATE_DEFAULT = 0,
+        GIT_EMAIL_CREATE_OMIT_NUMBERS = 1 << 0,
+        GIT_EMAIL_CREATE_ALWAYS_NUMBER = 1 << 1,
+        GIT_EMAIL_CREATE_NO_RENAMES = 1 << 2,
     }
 }
 
@@ -2708,6 +2776,7 @@ extern "C" {
     pub fn git_commit_parentcount(commit: *const git_commit) -> c_uint;
     pub fn git_commit_raw_header(commit: *const git_commit) -> *const c_char;
     pub fn git_commit_summary(commit: *mut git_commit) -> *const c_char;
+    pub fn git_commit_body(commit: *mut git_commit) -> *const c_char;
     pub fn git_commit_time(commit: *const git_commit) -> git_time_t;
     pub fn git_commit_time_offset(commit: *const git_commit) -> c_int;
     pub fn git_commit_tree(tree_out: *mut *mut git_tree, commit: *const git_commit) -> c_int;
@@ -3678,6 +3747,13 @@ extern "C" {
         comment_char: c_char,
     ) -> c_int;
 
+    pub fn git_message_trailers(
+        out: *mut git_message_trailer_array,
+        message: *const c_char,
+    ) -> c_int;
+
+    pub fn git_message_trailer_array_free(trailer: *mut git_message_trailer_array);
+
     // packbuilder
     pub fn git_packbuilder_new(out: *mut *mut git_packbuilder, repo: *mut git_repository) -> c_int;
     pub fn git_packbuilder_set_threads(pb: *mut git_packbuilder, n: c_uint) -> c_uint;
@@ -3702,7 +3778,9 @@ extern "C" {
         progress_cb: git_indexer_progress_cb,
         progress_cb_payload: *mut c_void,
     ) -> c_int;
+    #[deprecated = "use `git_packbuilder_name` to retrieve the filename"]
     pub fn git_packbuilder_hash(pb: *mut git_packbuilder) -> *const git_oid;
+    pub fn git_packbuilder_name(pb: *mut git_packbuilder) -> *const c_char;
     pub fn git_packbuilder_foreach(
         pb: *mut git_packbuilder,
         cb: git_packbuilder_foreach_cb,
@@ -3794,6 +3872,7 @@ extern "C" {
     ) -> c_int;
 
     pub fn git_odb_exists(odb: *mut git_odb, oid: *const git_oid) -> c_int;
+    pub fn git_odb_exists_ext(odb: *mut git_odb, oid: *const git_oid, flags: c_uint) -> c_int;
 
     pub fn git_odb_refresh(odb: *mut git_odb) -> c_int;
 
@@ -4054,6 +4133,25 @@ extern "C" {
         real_email: *const c_char,
         replace_name: *const c_char,
         replace_email: *const c_char,
+    ) -> c_int;
+
+    // email
+    pub fn git_email_create_from_diff(
+        out: *mut git_buf,
+        diff: *mut git_diff,
+        patch_idx: usize,
+        patch_count: usize,
+        commit_id: *const git_oid,
+        summary: *const c_char,
+        body: *const c_char,
+        author: *const git_signature,
+        given_opts: *const git_email_create_options,
+    ) -> c_int;
+
+    pub fn git_email_create_from_commit(
+        out: *mut git_buf,
+        commit: *mut git_commit,
+        given_opts: *const git_email_create_options,
     ) -> c_int;
 
     pub fn git_trace_set(level: git_trace_level_t, cb: git_trace_cb) -> c_int;

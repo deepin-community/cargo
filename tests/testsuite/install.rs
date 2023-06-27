@@ -5,9 +5,9 @@ use std::io::prelude::*;
 
 use cargo_test_support::cross_compile;
 use cargo_test_support::git;
-use cargo_test_support::registry::{self, registry_path, registry_url, Package};
+use cargo_test_support::registry::{self, registry_path, Package};
 use cargo_test_support::{
-    basic_manifest, cargo_process, no_such_file_err_msg, project, symlink_supported, t,
+    basic_manifest, cargo_process, no_such_file_err_msg, project, project_in, symlink_supported, t,
 };
 
 use cargo_test_support::install::{
@@ -55,11 +55,89 @@ fn simple() {
 }
 
 #[cargo_test]
+fn simple_with_message_format() {
+    pkg("foo", "0.0.1");
+
+    cargo_process("install foo --message-format=json")
+        .with_stderr(
+            "\
+[UPDATING] `[..]` index
+[DOWNLOADING] crates ...
+[DOWNLOADED] foo v0.0.1 (registry [..])
+[INSTALLING] foo v0.0.1
+[COMPILING] foo v0.0.1
+[FINISHED] release [optimized] target(s) in [..]
+[INSTALLING] [CWD]/home/.cargo/bin/foo[EXE]
+[INSTALLED] package `foo v0.0.1` (executable `foo[EXE]`)
+[WARNING] be sure to add `[..]` to your PATH to be able to run the installed binaries
+",
+        )
+        .with_json(
+            r#"
+            {
+                "reason": "compiler-artifact",
+                "package_id": "foo 0.0.1 ([..])",
+                "manifest_path": "[..]",
+                "target": {
+                    "kind": [
+                        "lib"
+                    ],
+                    "crate_types": [
+                        "lib"
+                    ],
+                    "name": "foo",
+                    "src_path": "[..]/foo-0.0.1/src/lib.rs",
+                    "edition": "2015",
+                    "doc": true,
+                    "doctest": true,
+                    "test": true
+                },
+                "profile": "{...}",
+                "features": [],
+                "filenames": "{...}",
+                "executable": null,
+                "fresh": false
+            }
+
+            {
+                "reason": "compiler-artifact",
+                "package_id": "foo 0.0.1 ([..])",
+                "manifest_path": "[..]",
+                "target": {
+                    "kind": [
+                        "bin"
+                    ],
+                    "crate_types": [
+                        "bin"
+                    ],
+                    "name": "foo",
+                    "src_path": "[..]/foo-0.0.1/src/main.rs",
+                    "edition": "2015",
+                    "doc": true,
+                    "doctest": false,
+                    "test": true
+                },
+                "profile": "{...}",
+                "features": [],
+                "filenames": "{...}",
+                "executable": "[..]",
+                "fresh": false
+            }
+
+            {"reason":"build-finished","success":true}
+            "#,
+        )
+        .run();
+    assert_has_installed_exe(cargo_home(), "foo");
+}
+
+#[cargo_test]
 fn with_index() {
+    let registry = registry::init();
     pkg("foo", "0.0.1");
 
     cargo_process("install foo --index")
-        .arg(registry_url().to_string())
+        .arg(registry.index_url().as_str())
         .with_stderr(&format!(
             "\
 [UPDATING] `{reg}` index
@@ -261,7 +339,7 @@ want to simply build the package.
 #[cargo_test]
 fn bad_version() {
     pkg("foo", "0.0.1");
-    cargo_process("install foo --vers=0.2.0")
+    cargo_process("install foo --version=0.2.0")
         .with_status(101)
         .with_stderr(
             "\
@@ -411,6 +489,70 @@ fn install_path_with_lowercase_cargo_toml() {
             "\
 [ERROR] `[CWD]` does not contain a Cargo.toml file, \
 but found cargo.toml please try to rename it to Cargo.toml. --path must point to a directory containing a Cargo.toml file.
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn install_relative_path_outside_current_ws() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.0"
+                authors = []
+
+                [workspace]
+                members = ["baz"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "baz/Cargo.toml",
+            r#"
+                [package]
+                name = "baz"
+                version = "0.1.0"
+                authors = []
+                edition = "2021"
+
+                [dependencies]
+                foo = "1"
+            "#,
+        )
+        .file("baz/src/lib.rs", "")
+        .build();
+
+    let _bin_project = project_in("bar")
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("install --path ../bar/foo")
+        .with_stderr(&format!(
+            "\
+[INSTALLING] foo v0.0.1 ([..]/bar/foo)
+[COMPILING] foo v0.0.1 ([..]/bar/foo)
+[FINISHED] release [..]
+[INSTALLING] {home}/bin/foo[EXE]
+[INSTALLED] package `foo v0.0.1 ([..]/bar/foo)` (executable `foo[EXE]`)
+[WARNING] be sure to add [..]
+",
+            home = cargo_home().display(),
+        ))
+        .run();
+
+    // Validate the workspace error message to display available targets.
+    p.cargo("install --path ../bar/foo --bin")
+        .with_status(101)
+        .with_stderr(
+            "\
+[ERROR] \"--bin\" takes one argument.
+Available binaries:
+    foo
+
 ",
         )
         .run();
@@ -738,11 +880,9 @@ fn compile_failure() {
         .with_status(101)
         .with_stderr_contains(
             "\
+[ERROR] could not compile `foo` due to previous error
 [ERROR] failed to compile `foo v0.0.1 ([..])`, intermediate artifacts can be \
     found at `[..]target`
-
-Caused by:
-  could not compile `foo` due to previous error
 ",
         )
         .run();
@@ -803,7 +943,7 @@ fn list() {
 
     cargo_process("install --list").with_stdout("").run();
 
-    cargo_process("install bar --vers =0.2.1").run();
+    cargo_process("install bar --version =0.2.1").run();
     cargo_process("install foo").run();
     cargo_process("install --list")
         .with_stdout(
@@ -847,7 +987,12 @@ Caused by:
   invalid TOML found for metadata
 
 Caused by:
-  unexpected character[..]
+  TOML parse error at line 1, column 1
+    |
+  1 | [..]
+    | ^
+  Unexpected `[..]`
+  Expected key or end of input
 ",
         )
         .run();
@@ -1238,12 +1383,59 @@ fn vers_precise() {
 }
 
 #[cargo_test]
-fn version_too() {
+fn version_precise() {
     pkg("foo", "0.1.1");
     pkg("foo", "0.1.2");
 
     cargo_process("install foo --version 0.1.1")
         .with_stderr_contains("[DOWNLOADED] foo v0.1.1 (registry [..])")
+        .run();
+}
+
+#[cargo_test]
+fn inline_version_precise() {
+    pkg("foo", "0.1.1");
+    pkg("foo", "0.1.2");
+
+    cargo_process("install foo@0.1.1")
+        .with_stderr_contains("[DOWNLOADED] foo v0.1.1 (registry [..])")
+        .run();
+}
+
+#[cargo_test]
+fn inline_version_multiple() {
+    pkg("foo", "0.1.0");
+    pkg("foo", "0.1.1");
+    pkg("foo", "0.1.2");
+    pkg("bar", "0.2.0");
+    pkg("bar", "0.2.1");
+    pkg("bar", "0.2.2");
+
+    cargo_process("install foo@0.1.1 bar@0.2.1")
+        .with_stderr_contains("[DOWNLOADED] foo v0.1.1 (registry [..])")
+        .with_stderr_contains("[DOWNLOADED] bar v0.2.1 (registry [..])")
+        .run();
+}
+
+#[cargo_test]
+fn inline_version_without_name() {
+    pkg("foo", "0.1.1");
+    pkg("foo", "0.1.2");
+
+    cargo_process("install @0.1.1")
+        .with_status(101)
+        .with_stderr("error: missing crate name for `@0.1.1`")
+        .run();
+}
+
+#[cargo_test]
+fn inline_and_explicit_version() {
+    pkg("foo", "0.1.1");
+    pkg("foo", "0.1.2");
+
+    cargo_process("install foo@0.1.1 --version 0.1.1")
+        .with_status(101)
+        .with_stderr("error: cannot specify both `@0.1.1` and `--version`")
         .run();
 }
 
@@ -1284,7 +1476,7 @@ fn uninstall_multiple_and_specifying_bin() {
 }
 
 #[cargo_test]
-fn uninstall_with_empty_pakcage_option() {
+fn uninstall_with_empty_package_option() {
     cargo_process("uninstall -p")
         .with_status(101)
         .with_stderr(
@@ -1563,7 +1755,9 @@ fn install_ignores_unstable_table_in_local_cargo_config() {
         .file("src/main.rs", "fn main() {}")
         .build();
 
-    p.cargo("install bar").masquerade_as_nightly_cargo().run();
+    p.cargo("install bar")
+        .masquerade_as_nightly_cargo(&["build-std"])
+        .run();
     assert_has_installed_exe(cargo_home(), "bar");
 }
 

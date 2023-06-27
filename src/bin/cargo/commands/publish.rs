@@ -5,14 +5,14 @@ use cargo::ops::{self, PublishOpts};
 pub fn cli() -> App {
     subcommand("publish")
         .about("Upload a package to the registry")
-        .arg(opt("quiet", "No output printed to stdout").short("q"))
+        .arg_quiet()
         .arg_index()
         .arg(opt("token", "Token to use when uploading").value_name("TOKEN"))
-        .arg(opt(
+        .arg(flag(
             "no-verify",
             "Don't verify the contents by building them",
         ))
-        .arg(opt(
+        .arg(flag(
             "allow-dirty",
             "Allow dirty working directories to be packaged",
         ))
@@ -27,25 +27,26 @@ pub fn cli() -> App {
         .after_help("Run `cargo help publish` for more detailed information.\n")
 }
 
-pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
+pub fn exec(config: &mut Config, args: &ArgMatches) -> CliResult {
     config.load_credentials()?;
 
     let registry = args.registry(config)?;
     let ws = args.workspace(config)?;
-    let index = args.index(config)?;
+    let index = args.index()?;
 
     ops::publish(
         &ws,
         &PublishOpts {
             config,
-            token: args.value_of("token").map(|s| s.to_string()),
+            token: args.get_one::<String>("token").map(|s| s.to_string()),
             index,
-            verify: !args.is_present("no-verify"),
-            allow_dirty: args.is_present("allow-dirty"),
+            verify: !args.flag("no-verify"),
+            allow_dirty: args.flag("allow-dirty"),
             to_publish: args.packages_from_flags()?,
             targets: args.targets(),
             jobs: args.jobs()?,
-            dry_run: args.is_present("dry-run"),
+            keep_going: args.keep_going(),
+            dry_run: args.dry_run(),
             registry,
             cli_features: args.cli_features()?,
         },

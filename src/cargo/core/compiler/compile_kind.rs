@@ -2,7 +2,7 @@ use crate::core::Target;
 use crate::util::errors::CargoResult;
 use crate::util::interning::InternedString;
 use crate::util::{Config, StableHasher};
-use anyhow::{bail, Context as _};
+use anyhow::Context as _;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
@@ -52,11 +52,8 @@ impl CompileKind {
         config: &Config,
         targets: &[String],
     ) -> CargoResult<Vec<CompileKind>> {
-        if targets.len() > 1 && !config.cli_unstable().multitarget {
-            bail!("specifying multiple `--target` flags requires `-Zmultitarget`")
-        }
-        if !targets.is_empty() {
-            return Ok(targets
+        let dedup = |targets: &[String]| {
+            Ok(targets
                 .iter()
                 .map(|value| Ok(CompileKind::Target(CompileTarget::new(value)?)))
                 // First collect into a set to deduplicate any `--target` passed
@@ -64,21 +61,19 @@ impl CompileKind {
                 .collect::<CargoResult<BTreeSet<_>>>()?
                 // ... then generate a flat list for everything else to use.
                 .into_iter()
-                .collect());
-        }
-        let kind = match &config.build_config()?.target {
-            Some(val) => {
-                let value = if val.raw_value().ends_with(".json") {
-                    let path = val.clone().resolve_path(config);
-                    path.to_str().expect("must be utf-8 in toml").to_string()
-                } else {
-                    val.raw_value().to_string()
-                };
-                CompileKind::Target(CompileTarget::new(&value)?)
-            }
-            None => CompileKind::Host,
+                .collect())
         };
-        Ok(vec![kind])
+
+        if !targets.is_empty() {
+            return dedup(targets);
+        }
+
+        let kinds = match &config.build_config()?.target {
+            None => Ok(vec![CompileKind::Host]),
+            Some(build_target_config) => dedup(&build_target_config.values(config)?),
+        };
+
+        kinds
     }
 
     /// Hash used for fingerprinting.
@@ -158,8 +153,8 @@ impl CompileTarget {
     /// Typically this is pretty much the same as `short_name`, but for the case
     /// of JSON target files this will be a full canonicalized path name for the
     /// current filesystem.
-    pub fn rustc_target(&self) -> &str {
-        &self.name
+    pub fn rustc_target(&self) -> InternedString {
+        self.name
     }
 
     /// Returns a "short" version of the target name suitable for usage within
@@ -184,13 +179,19 @@ impl CompileTarget {
     /// See [`CompileKind::fingerprint_hash`].
     pub fn fingerprint_hash(&self) -> u64 {
         let mut hasher = StableHasher::new();
-        self.name.hash(&mut hasher);
-        if self.name.ends_with(".json") {
-            // This may have some performance concerns, since it is called
-            // fairly often. If that ever seems worth fixing, consider
-            // embedding this in `CompileTarget`.
-            if let Ok(contents) = fs::read_to_string(self.name) {
+        match self
+            .name
+            .ends_with(".json")
+            .then(|| fs::read_to_string(self.name))
+        {
+            Some(Ok(contents)) => {
+                // This may have some performance concerns, since it is called
+                // fairly often. If that ever seems worth fixing, consider
+                // embedding this in `CompileTarget`.
                 contents.hash(&mut hasher);
+            }
+            _ => {
+                self.name.hash(&mut hasher);
             }
         }
         hasher.finish()

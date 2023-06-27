@@ -828,6 +828,31 @@ pub mod parsing {
         }
     }
 
+    impl TypeParamBound {
+        pub(crate) fn parse_multiple(
+            input: ParseStream,
+            allow_plus: bool,
+        ) -> Result<Punctuated<Self, Token![+]>> {
+            let mut bounds = Punctuated::new();
+            loop {
+                bounds.push_value(input.parse()?);
+                if !(allow_plus && input.peek(Token![+])) {
+                    break;
+                }
+                bounds.push_punct(input.parse()?);
+                if !(input.peek(Ident::peek_any)
+                    || input.peek(Token![::])
+                    || input.peek(Token![?])
+                    || input.peek(Lifetime)
+                    || input.peek(token::Paren))
+                {
+                    break;
+                }
+            }
+            Ok(bounds)
+        }
+    }
+
     #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for TraitBound {
         fn parse(input: ParseStream) -> Result<Self> {
@@ -844,8 +869,12 @@ pub mod parsing {
             let lifetimes: Option<BoundLifetimes> = input.parse()?;
 
             let mut path: Path = input.parse()?;
-            if path.segments.last().unwrap().arguments.is_empty() && input.peek(token::Paren) {
-                let parenthesized = PathArguments::Parenthesized(input.parse()?);
+            if path.segments.last().unwrap().arguments.is_empty()
+                && (input.peek(token::Paren) || input.peek(Token![::]) && input.peek3(token::Paren))
+            {
+                input.parse::<Option<Token![::]>>()?;
+                let args: ParenthesizedGenericArguments = input.parse()?;
+                let parenthesized = PathArguments::Parenthesized(args);
                 path.segments.last_mut().unwrap().arguments = parenthesized;
             }
 

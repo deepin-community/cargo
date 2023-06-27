@@ -1,0 +1,10 @@
+--- miniz-oxide.orig/Cargo.toml
++++ miniz-oxide/Cargo.toml
+@@ -45,5 +44,0 @@
+-[dependencies.simd-adler32]
+-version = "0.3"
+-optional = true
+-default-features = false
+-
+@@ -52 +46,0 @@
+-simd = ["simd-adler32"]

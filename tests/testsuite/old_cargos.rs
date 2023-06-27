@@ -86,10 +86,18 @@ fn collect_all_toolchains() -> Vec<(Version, String)> {
         .map(|line| (rustc_version(line), line.to_string()))
         .collect();
 
-    // Also include *this* cargo.
-    toolchains.push((rustc_version("this"), "this".to_string()));
     toolchains.sort_by(|a, b| a.0.cmp(&b.0));
     toolchains
+}
+
+/// Returns whether the default toolchain is the stable version.
+fn default_toolchain_is_stable() -> bool {
+    let default = tc_process("rustc", "this").arg("-V").exec_with_output();
+    let stable = tc_process("rustc", "stable").arg("-V").exec_with_output();
+    match (default, stable) {
+        (Ok(d), Ok(s)) => d.stdout == s.stdout,
+        _ => false,
+    }
 }
 
 // This is a test for exercising the behavior of older versions of cargo with
@@ -102,9 +110,10 @@ fn collect_all_toolchains() -> Vec<(Version, String)> {
 //   The optional dependency `new-baz-dep` should not be activated.
 // * `bar` 1.0.2 has a dependency on `baz` that *requires* the new feature
 //   syntax.
-#[ignore]
+#[ignore = "must be run manually, requires old cargo installations"]
 #[cargo_test]
 fn new_features() {
+    let registry = registry::init();
     if std::process::Command::new("rustup").output().is_err() {
         panic!("old_cargos requires rustup to be installed");
     }
@@ -145,7 +154,7 @@ fn new_features() {
 
     let lock_bar_to = |toolchain_version: &Version, bar_version| {
         let lock = if toolchain_version < &Version::new(1, 12, 0) {
-            let url = registry::registry_url();
+            let url = registry.index_url();
             match bar_version {
                 100 => format!(
                     r#"
@@ -306,7 +315,7 @@ fn new_features() {
                         [registry]
                         index = "{}"
                     "#,
-                    registry::registry_url()
+                    registry.index_url()
                 ),
             )
             .unwrap();
@@ -322,7 +331,7 @@ fn new_features() {
                         [source.dummy-registry]
                         registry = '{}'
                     ",
-                    registry::registry_url()
+                    registry.index_url()
                 ),
             )
             .unwrap();
@@ -411,15 +420,26 @@ fn new_features() {
         p.build_dir().rm_rf();
         match run_cargo() {
             Ok(behavior) => {
-                // TODO: Switch to 51 after backport.
-                if version < &Version::new(1, 52, 0) && toolchain != "this" {
+                if version < &Version::new(1, 51, 0) {
                     check_lock!(tc_result, "bar", which, behavior.bar, "1.0.2");
                     check_lock!(tc_result, "baz", which, behavior.baz, "1.0.1");
                     check_lock!(tc_result, "new-baz-dep", which, behavior.new_baz_dep, None);
-                } else {
+                } else if version >= &Version::new(1, 51, 0) && version <= &Version::new(1, 59, 0) {
                     check_lock!(tc_result, "bar", which, behavior.bar, "1.0.0");
                     check_lock!(tc_result, "baz", which, behavior.baz, None);
                     check_lock!(tc_result, "new-baz-dep", which, behavior.new_baz_dep, None);
+                }
+                // Starting with 1.60, namespaced-features has been stabilized.
+                else {
+                    check_lock!(tc_result, "bar", which, behavior.bar, "1.0.2");
+                    check_lock!(tc_result, "baz", which, behavior.baz, "1.0.1");
+                    check_lock!(
+                        tc_result,
+                        "new-baz-dep",
+                        which,
+                        behavior.new_baz_dep,
+                        "1.0.0"
+                    );
                 }
             }
             Err(e) => {
@@ -449,16 +469,14 @@ fn new_features() {
                 check_lock!(tc_result, "new-baz-dep", which, behavior.new_baz_dep, None);
             }
             Err(e) => {
-                if toolchain == "this" {
-                    // 1.0.1 can't be used without -Znamespaced-features
-                    // It gets filtered out of the index.
-                    check_err_contains(&mut tc_result, e,
-                        "error: failed to select a version for the requirement `bar = \"=1.0.1\"`\n\
-                        candidate versions found which didn't match: 1.0.2, 1.0.0"
-                    );
-                } else {
-                    tc_result.push(format!("bar 1.0.1 locked build failed: {}", e));
-                }
+                // When version >= 1.51 and <= 1.59,
+                // 1.0.1 can't be used without -Znamespaced-features
+                // It gets filtered out of the index.
+                check_err_contains(
+                    &mut tc_result,
+                    e,
+                    "candidate versions found which didn't match: 1.0.2, 1.0.0",
+                );
             }
         }
 
@@ -466,20 +484,32 @@ fn new_features() {
         lock_bar_to(version, 102);
         match run_cargo() {
             Ok(behavior) => {
-                check_lock!(tc_result, "bar", which, behavior.bar, "1.0.2");
-                check_lock!(tc_result, "baz", which, behavior.baz, "1.0.1");
-                check_lock!(tc_result, "new-baz-dep", which, behavior.new_baz_dep, None);
+                if version <= &Version::new(1, 59, 0) {
+                    check_lock!(tc_result, "bar", which, behavior.bar, "1.0.2");
+                    check_lock!(tc_result, "baz", which, behavior.baz, "1.0.1");
+                    check_lock!(tc_result, "new-baz-dep", which, behavior.new_baz_dep, None);
+                }
+                // Starting with 1.60, namespaced-features has been stabilized.
+                else {
+                    check_lock!(tc_result, "bar", which, behavior.bar, "1.0.2");
+                    check_lock!(tc_result, "baz", which, behavior.baz, "1.0.1");
+                    check_lock!(
+                        tc_result,
+                        "new-baz-dep",
+                        which,
+                        behavior.new_baz_dep,
+                        "1.0.0"
+                    );
+                }
             }
             Err(e) => {
-                if toolchain == "this" {
-                    // baz can't lock to 1.0.1, it requires -Znamespaced-features
-                    check_err_contains(&mut tc_result, e,
-                        "error: failed to select a version for the requirement `baz = \"=1.0.1\"`\n\
-                        candidate versions found which didn't match: 1.0.0"
-                    );
-                } else {
-                    tc_result.push(format!("bar 1.0.2 locked build failed: {}", e));
-                }
+                // When version >= 1.51 and <= 1.59,
+                // baz can't lock to 1.0.1, it requires -Znamespaced-features
+                check_err_contains(
+                    &mut tc_result,
+                    e,
+                    "candidate versions found which didn't match: 1.0.0",
+                );
             }
         }
 
@@ -504,7 +534,7 @@ fn new_features() {
 }
 
 #[cargo_test]
-#[ignore]
+#[ignore = "must be run manually, requires old cargo installations"]
 fn index_cache_rebuild() {
     // Checks that the index cache gets rebuilt.
     //
@@ -558,8 +588,7 @@ fn index_cache_rebuild() {
     fs::remove_file(p.root().join("Cargo.lock")).unwrap();
 
     // This should rebuild the cache and use 1.0.1.
-    p.cargo("check -Znamespaced-features")
-        .masquerade_as_nightly_cargo()
+    p.cargo("check")
         .with_stderr(
             "\
 [UPDATING] [..]
@@ -589,8 +618,13 @@ foo v0.1.0 [..]
 }
 
 #[cargo_test]
-#[ignore]
+#[ignore = "must be run manually, requires old cargo installations"]
 fn avoids_split_debuginfo_collision() {
+    // Test needs two different toolchains.
+    // If the default toolchain is stable, then it won't work.
+    if default_toolchain_is_stable() {
+        return;
+    }
     // Checks for a bug where .o files were being incorrectly shared between
     // different toolchains using incremental and split-debuginfo on macOS.
     let p = project()
@@ -638,7 +672,6 @@ fn avoids_split_debuginfo_collision() {
         .cwd(p.root())
         .with_stderr(
             "\
-[COMPILING] foo v0.1.0 [..]
 [FINISHED] [..]
 ",
         )

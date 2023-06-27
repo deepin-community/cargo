@@ -1,9 +1,6 @@
 #![allow(unknown_lints)]
 
-use crate::core::{TargetKind, Workspace};
-use crate::ops::CompileOptions;
 use anyhow::Error;
-use cargo_util::ProcessError;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -100,6 +97,39 @@ impl fmt::Display for InternalError {
 }
 
 // =============================================================================
+// Already printed error
+
+/// An error that does not need to be printed because it does not add any new
+/// information to what has already been printed.
+pub struct AlreadyPrintedError {
+    inner: Error,
+}
+
+impl AlreadyPrintedError {
+    pub fn new(inner: Error) -> Self {
+        AlreadyPrintedError { inner }
+    }
+}
+
+impl std::error::Error for AlreadyPrintedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.source()
+    }
+}
+
+impl fmt::Debug for AlreadyPrintedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+impl fmt::Display for AlreadyPrintedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+// =============================================================================
 // Manifest error
 
 /// Error wrapper related to a particular manifest and providing it's path.
@@ -165,91 +195,6 @@ impl<'a> Iterator for ManifestCauses<'a> {
 impl<'a> ::std::iter::FusedIterator for ManifestCauses<'a> {}
 
 // =============================================================================
-// Cargo test errors.
-
-/// Error when testcases fail
-#[derive(Debug)]
-pub struct CargoTestError {
-    pub test: Test,
-    pub desc: String,
-    pub code: Option<i32>,
-    pub causes: Vec<ProcessError>,
-}
-
-impl fmt::Display for CargoTestError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.desc.fmt(f)
-    }
-}
-
-impl std::error::Error for CargoTestError {}
-
-#[derive(Debug)]
-pub enum Test {
-    Multiple,
-    Doc,
-    UnitTest {
-        kind: TargetKind,
-        name: String,
-        pkg_name: String,
-    },
-}
-
-impl CargoTestError {
-    pub fn new(test: Test, errors: Vec<ProcessError>) -> Self {
-        if errors.is_empty() {
-            panic!("Cannot create CargoTestError from empty Vec")
-        }
-        let desc = errors
-            .iter()
-            .map(|error| error.desc.clone())
-            .collect::<Vec<String>>()
-            .join("\n");
-        CargoTestError {
-            test,
-            desc,
-            code: errors[0].code,
-            causes: errors,
-        }
-    }
-
-    pub fn hint(&self, ws: &Workspace<'_>, opts: &CompileOptions) -> String {
-        match self.test {
-            Test::UnitTest {
-                ref kind,
-                ref name,
-                ref pkg_name,
-            } => {
-                let pkg_info = if opts.spec.needs_spec_flag(ws) {
-                    format!("-p {} ", pkg_name)
-                } else {
-                    String::new()
-                };
-
-                match *kind {
-                    TargetKind::Bench => {
-                        format!("test failed, to rerun pass '{}--bench {}'", pkg_info, name)
-                    }
-                    TargetKind::Bin => {
-                        format!("test failed, to rerun pass '{}--bin {}'", pkg_info, name)
-                    }
-                    TargetKind::Lib(_) => format!("test failed, to rerun pass '{}--lib'", pkg_info),
-                    TargetKind::Test => {
-                        format!("test failed, to rerun pass '{}--test {}'", pkg_info, name)
-                    }
-                    TargetKind::ExampleBin | TargetKind::ExampleLib(_) => {
-                        format!("test failed, to rerun pass '{}--example {}", pkg_info, name)
-                    }
-                    _ => "test failed.".into(),
-                }
-            }
-            Test::Doc => "test failed, to rerun pass '--doc'".into(),
-            _ => "test failed.".into(),
-        }
-    }
-}
-
-// =============================================================================
 // CLI errors
 
 pub type CliResult = Result<(), CliError>;
@@ -297,6 +242,12 @@ impl From<clap::Error> for CliError {
     fn from(err: clap::Error) -> CliError {
         let code = if err.use_stderr() { 1 } else { 0 };
         CliError::new(err.into(), code)
+    }
+}
+
+impl From<std::io::Error> for CliError {
+    fn from(err: std::io::Error) -> CliError {
+        CliError::new(err.into(), 1)
     }
 }
 

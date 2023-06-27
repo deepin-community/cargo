@@ -3,8 +3,8 @@
 // http://rust-lang.org/COPYRIGHT.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
@@ -89,6 +89,8 @@ pub enum VsVers {
     Vs15,
     /// Visual Studio 16 (2019)
     Vs16,
+    /// Visual Studio 17 (2022)
+    Vs17,
 
     /// Hidden variant that should not be matched on. Callers that want to
     /// handle an enumeration of `VsVers` instances should always have a default
@@ -114,6 +116,7 @@ pub fn find_vs_version() -> Result<VsVers, String> {
 
     match env::var("VisualStudioVersion") {
         Ok(version) => match &version[..] {
+            "17.0" => Ok(VsVers::Vs17),
             "16.0" => Ok(VsVers::Vs16),
             "15.0" => Ok(VsVers::Vs15),
             "14.0" => Ok(VsVers::Vs14),
@@ -131,7 +134,9 @@ pub fn find_vs_version() -> Result<VsVers, String> {
         _ => {
             // Check for the presence of a specific registry key
             // that indicates visual studio is installed.
-            if impl_::has_msbuild_version("16.0") {
+            if impl_::has_msbuild_version("17.0") {
+                Ok(VsVers::Vs17)
+            } else if impl_::has_msbuild_version("16.0") {
                 Ok(VsVers::Vs16)
             } else if impl_::has_msbuild_version("15.0") {
                 Ok(VsVers::Vs15)
@@ -223,7 +228,7 @@ mod impl_ {
     }
 
     /// Attempt to find the tool using environment variables set by vcvars.
-    pub fn find_msvc_environment(target: &str, tool: &str) -> Option<Tool> {
+    pub fn find_msvc_environment(tool: &str, target: &str) -> Option<Tool> {
         // Early return if the environment doesn't contain a VC install.
         if env::var_os("VCINSTALLDIR").is_none() {
             return None;
@@ -247,18 +252,22 @@ mod impl_ {
         }
     }
 
+    fn find_msbuild_vs17(target: &str) -> Option<Tool> {
+        find_tool_in_vs16plus_path(r"MSBuild\Current\Bin\MSBuild.exe", target, "17")
+    }
+
     #[allow(bare_trait_objects)]
-    fn vs16_instances(target: &str) -> Box<Iterator<Item = PathBuf>> {
+    fn vs16plus_instances(target: &str, version: &'static str) -> Box<Iterator<Item = PathBuf>> {
         let instances = if let Some(instances) = vs15plus_instances(target) {
             instances
         } else {
             return Box::new(iter::empty());
         };
-        Box::new(instances.into_iter().filter_map(|instance| {
+        Box::new(instances.into_iter().filter_map(move |instance| {
             let installation_name = instance.installation_name()?;
-            if installation_name.starts_with("VisualStudio/16.") {
+            if installation_name.starts_with(&format!("VisualStudio/{}.", version)) {
                 Some(instance.installation_path()?)
-            } else if installation_name.starts_with("VisualStudioPreview/16.") {
+            } else if installation_name.starts_with(&format!("VisualStudioPreview/{}.", version)) {
                 Some(instance.installation_path()?)
             } else {
                 None
@@ -266,8 +275,8 @@ mod impl_ {
         }))
     }
 
-    fn find_tool_in_vs16_path(tool: &str, target: &str) -> Option<Tool> {
-        vs16_instances(target)
+    fn find_tool_in_vs16plus_path(tool: &str, target: &str, version: &'static str) -> Option<Tool> {
+        vs16plus_instances(target, version)
             .filter_map(|path| {
                 let path = path.join(tool);
                 if !path.is_file() {
@@ -286,7 +295,7 @@ mod impl_ {
     }
 
     fn find_msbuild_vs16(target: &str) -> Option<Tool> {
-        find_tool_in_vs16_path(r"MSBuild\Current\Bin\MSBuild.exe", target)
+        find_tool_in_vs16plus_path(r"MSBuild\Current\Bin\MSBuild.exe", target, "16")
     }
 
     // In MSVC 15 (2017) MS once again changed the scheme for locating
@@ -384,7 +393,7 @@ mod impl_ {
     // according to Microsoft. To help head off potential regressions though,
     // we keep the registry method as a fallback option.
     //
-    // [more reliable]: https://github.com/alexcrichton/cc-rs/pull/331
+    // [more reliable]: https://github.com/rust-lang/cc-rs/pull/331
     fn find_tool_in_vs15_path(tool: &str, target: &str) -> Option<Tool> {
         let mut path = match vs15plus_instances(target) {
             Some(instances) => instances
@@ -422,7 +431,7 @@ mod impl_ {
         target: &str,
         instance_path: &PathBuf,
     ) -> Option<Tool> {
-        let (bin_path, host_dylib_path, lib_path, include_path) =
+        let (root_path, bin_path, host_dylib_path, lib_path, include_path) =
             vs15plus_vc_paths(target, instance_path)?;
         let tool_path = bin_path.join(tool);
         if !tool_path.exists() {
@@ -435,7 +444,7 @@ mod impl_ {
         tool.libs.push(lib_path);
         tool.include.push(include_path);
 
-        if let Some((atl_lib_path, atl_include_path)) = atl_paths(target, &bin_path) {
+        if let Some((atl_lib_path, atl_include_path)) = atl_paths(target, &root_path) {
             tool.libs.push(atl_lib_path);
             tool.include.push(atl_include_path);
         }
@@ -448,7 +457,7 @@ mod impl_ {
     fn vs15plus_vc_paths(
         target: &str,
         instance_path: &PathBuf,
-    ) -> Option<(PathBuf, PathBuf, PathBuf, PathBuf)> {
+    ) -> Option<(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf)> {
         let version_path =
             instance_path.join(r"VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt");
         let mut version_file = File::open(version_path).ok()?;
@@ -481,7 +490,7 @@ mod impl_ {
             .join(&host.to_lowercase());
         let lib_path = path.join("lib").join(&target);
         let include_path = path.join("include");
-        Some((bin_path, host_dylib_path, lib_path, include_path))
+        Some((path, bin_path, host_dylib_path, lib_path, include_path))
     }
 
     fn atl_paths(target: &str, path: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -660,7 +669,15 @@ mod impl_ {
     // only need to bother checking x64, making this code a tiny bit simpler.
     // Like we do for the Universal CRT, we sort the possibilities
     // asciibetically to find the newest one as that is what vcvars does.
+    // Before doing that, we check the "WindowsSdkDir" and "WindowsSDKVersion"
+    // environment variables set by vcvars to use the environment sdk version
+    // if one is already configured.
     fn get_sdk10_dir() -> Option<(PathBuf, String)> {
+        if let (Ok(root), Ok(version)) = (env::var("WindowsSdkDir"), env::var("WindowsSDKVersion"))
+        {
+            return Some((root.into(), version.trim_end_matches('\\').to_string()));
+        }
+
         let key = r"SOFTWARE\Microsoft\Microsoft SDKs\Windows\v10.0";
         let key = LOCAL_MACHINE.open(key.as_ref()).ok()?;
         let root = key.query_str("InstallationFolder").ok()?;
@@ -813,6 +830,11 @@ mod impl_ {
 
     pub fn has_msbuild_version(version: &str) -> bool {
         match version {
+            "17.0" => {
+                find_msbuild_vs17("x86_64-pc-windows-msvc").is_some()
+                    || find_msbuild_vs17("i686-pc-windows-msvc").is_some()
+                    || find_msbuild_vs17("aarch64-pc-windows-msvc").is_some()
+            }
             "16.0" => {
                 find_msbuild_vs16("x86_64-pc-windows-msvc").is_some()
                     || find_msbuild_vs16("i686-pc-windows-msvc").is_some()

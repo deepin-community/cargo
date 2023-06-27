@@ -68,7 +68,7 @@ use std::time::Instant;
 use self::ConfigValue as CV;
 use crate::core::compiler::rustdoc::RustdocExternMap;
 use crate::core::shell::Verbosity;
-use crate::core::{features, CliUnstable, Shell, SourceId, Workspace};
+use crate::core::{features, CliUnstable, Shell, SourceId, Workspace, WorkspaceRootConfig};
 use crate::ops;
 use crate::util::errors::CargoResult;
 use crate::util::toml as cargo_toml;
@@ -79,6 +79,7 @@ use cargo_util::paths;
 use curl::easy::Easy;
 use lazycell::LazyCell;
 use serde::Deserialize;
+use toml_edit::{easy as toml, Item};
 use url::Url;
 
 mod de;
@@ -201,6 +202,8 @@ pub struct Config {
     /// NOTE: this should be set before `configure()`. If calling this from an integration test,
     /// consider using `ConfigBuilder::enable_nightly_features` instead.
     pub nightly_features_allowed: bool,
+    /// WorkspaceRootConfigs that have been found
+    pub ws_roots: RefCell<HashMap<PathBuf, WorkspaceRootConfig>>,
 }
 
 impl Config {
@@ -284,6 +287,7 @@ impl Config {
             progress_config: ProgressConfig::default(),
             env_config: LazyCell::new(),
             nightly_features_allowed: matches!(&*features::channel(), "nightly" | "dev"),
+            ws_roots: RefCell::new(HashMap::new()),
         }
     }
 
@@ -314,19 +318,24 @@ impl Config {
         self.home_path.join("git")
     }
 
+    /// Gets the Cargo base directory for all registry information (`<cargo_home>/registry`).
+    pub fn registry_base_path(&self) -> Filesystem {
+        self.home_path.join("registry")
+    }
+
     /// Gets the Cargo registry index directory (`<cargo_home>/registry/index`).
     pub fn registry_index_path(&self) -> Filesystem {
-        self.home_path.join("registry").join("index")
+        self.registry_base_path().join("index")
     }
 
     /// Gets the Cargo registry cache directory (`<cargo_home>/registry/path`).
     pub fn registry_cache_path(&self) -> Filesystem {
-        self.home_path.join("registry").join("cache")
+        self.registry_base_path().join("cache")
     }
 
     /// Gets the Cargo registry source directory (`<cargo_home>/registry/src`).
     pub fn registry_source_path(&self) -> Filesystem {
-        self.home_path.join("registry").join("src")
+        self.registry_base_path().join("src")
     }
 
     /// Gets the default Cargo registry.
@@ -886,7 +895,6 @@ impl Config {
             self.unstable_flags_cli = Some(unstable_flags.to_vec());
         }
         if !cli_config.is_empty() {
-            self.unstable_flags.fail_if_stable_opt("--config", 6699)?;
             self.cli_config = Some(cli_config.iter().map(|s| s.to_string()).collect());
             self.merge_cli_args()?;
         }
@@ -909,20 +917,19 @@ impl Config {
 
         let color = color.or_else(|| term.color.as_deref());
 
-        let verbosity = match (verbose, term.verbose, quiet) {
-            (true, _, false) | (_, Some(true), false) => Verbosity::Verbose,
-
-            // Command line takes precedence over configuration, so ignore the
-            // configuration..
-            (false, _, true) => Verbosity::Quiet,
-
-            // Can't pass both at the same time on the command line regardless
-            // of configuration.
-            (true, _, true) => {
-                bail!("cannot set both --verbose and --quiet");
-            }
-
-            (false, _, false) => Verbosity::Normal,
+        // The command line takes precedence over configuration.
+        let verbosity = match (verbose, quiet) {
+            (true, true) => bail!("cannot set both --verbose and --quiet"),
+            (true, false) => Verbosity::Verbose,
+            (false, true) => Verbosity::Quiet,
+            (false, false) => match (term.verbose, term.quiet) {
+                (Some(true), Some(true)) => {
+                    bail!("cannot set both `term.verbose` and `term.quiet`")
+                }
+                (Some(true), _) => Verbosity::Verbose,
+                (_, Some(true)) => Verbosity::Quiet,
+                _ => Verbosity::Normal,
+            },
         };
 
         let cli_target_dir = target_dir.as_ref().map(|dir| Filesystem::new(dir.clone()));
@@ -1053,8 +1060,7 @@ impl Config {
     }
 
     fn load_file(&self, path: &Path, includes: bool) -> CargoResult<ConfigValue> {
-        let mut seen = HashSet::new();
-        self._load_file(path, &mut seen, includes)
+        self._load_file(path, &mut HashSet::new(), includes)
     }
 
     fn _load_file(
@@ -1119,7 +1125,7 @@ impl Config {
         cv: &mut CV,
         remove: bool,
     ) -> CargoResult<Vec<(String, PathBuf, Definition)>> {
-        let abs = |path: &String, def: &Definition| -> (String, PathBuf, Definition) {
+        let abs = |path: &str, def: &Definition| -> (String, PathBuf, Definition) {
             let abs_path = match def {
                 Definition::Path(p) => p.parent().unwrap().join(&path),
                 Definition::Environment(_) | Definition::Cli => self.cwd().join(&path),
@@ -1161,6 +1167,7 @@ impl Config {
             Some(cli_args) => cli_args,
             None => return Ok(loaded_args),
         };
+        let mut seen = HashSet::new();
         for arg in cli_args {
             let arg_as_path = self.cwd.join(arg);
             let tmp_table = if !arg.is_empty() && arg_as_path.exists() {
@@ -1171,33 +1178,110 @@ impl Config {
                         anyhow::format_err!("config path {:?} is not utf-8", arg_as_path)
                     })?
                     .to_string();
-                let mut map = HashMap::new();
-                let value = CV::String(str_path, Definition::Cli);
-                map.insert("include".to_string(), value);
-                CV::Table(map, Definition::Cli)
+                self._load_file(&self.cwd().join(&str_path), &mut seen, true)
+                    .with_context(|| format!("failed to load config from `{}`", str_path))?
             } else {
-                // TODO: This should probably use a more narrow parser, reject
-                // comments, blank lines, [headers], etc.
-                let toml_v: toml::Value = toml::de::from_str(arg)
-                    .with_context(|| format!("failed to parse --config argument `{}`", arg))?;
-                let toml_table = toml_v.as_table().unwrap();
-                if toml_table.len() != 1 {
+                // We only want to allow "dotted key" (see https://toml.io/en/v1.0.0#keys)
+                // expressions followed by a value that's not an "inline table"
+                // (https://toml.io/en/v1.0.0#inline-table). Easiest way to check for that is to
+                // parse the value as a toml_edit::Document, and check that the (single)
+                // inner-most table is set via dotted keys.
+                let doc: toml_edit::Document = arg.parse().with_context(|| {
+                    format!("failed to parse value from --config argument `{arg}` as a dotted key expression")
+                })?;
+                fn non_empty_decor(d: &toml_edit::Decor) -> bool {
+                    d.prefix().map_or(false, |p| !p.trim().is_empty())
+                        || d.suffix().map_or(false, |s| !s.trim().is_empty())
+                }
+                let ok = {
+                    let mut got_to_value = false;
+                    let mut table = doc.as_table();
+                    let mut is_root = true;
+                    while table.is_dotted() || is_root {
+                        is_root = false;
+                        if table.len() != 1 {
+                            break;
+                        }
+                        let (k, n) = table.iter().next().expect("len() == 1 above");
+                        match n {
+                            Item::Table(nt) => {
+                                if table.key_decor(k).map_or(false, non_empty_decor)
+                                    || non_empty_decor(nt.decor())
+                                {
+                                    bail!(
+                                        "--config argument `{arg}` \
+                                            includes non-whitespace decoration"
+                                    )
+                                }
+                                table = nt;
+                            }
+                            Item::Value(v) if v.is_inline_table() => {
+                                bail!(
+                                    "--config argument `{arg}` \
+                                    sets a value to an inline table, which is not accepted"
+                                );
+                            }
+                            Item::Value(v) => {
+                                if non_empty_decor(v.decor()) {
+                                    bail!(
+                                        "--config argument `{arg}` \
+                                            includes non-whitespace decoration"
+                                    )
+                                }
+                                got_to_value = true;
+                                break;
+                            }
+                            Item::ArrayOfTables(_) => {
+                                bail!(
+                                    "--config argument `{arg}` \
+                                    sets a value to an array of tables, which is not accepted"
+                                );
+                            }
+
+                            Item::None => {
+                                bail!("--config argument `{arg}` doesn't provide a value")
+                            }
+                        }
+                    }
+                    got_to_value
+                };
+                if !ok {
                     bail!(
-                        "--config argument `{}` expected exactly one key=value pair, got {} keys",
-                        arg,
-                        toml_table.len()
+                        "--config argument `{arg}` was not a TOML dotted key expression (such as `build.jobs = 2`)"
                     );
                 }
+
+                let toml_v: toml::Value = toml::from_document(doc).with_context(|| {
+                    format!("failed to parse value from --config argument `{arg}`")
+                })?;
+
+                if toml_v
+                    .get("registry")
+                    .and_then(|v| v.as_table())
+                    .and_then(|t| t.get("token"))
+                    .is_some()
+                {
+                    bail!("registry.token cannot be set through --config for security reasons");
+                } else if let Some((k, _)) = toml_v
+                    .get("registries")
+                    .and_then(|v| v.as_table())
+                    .and_then(|t| t.iter().find(|(_, v)| v.get("token").is_some()))
+                {
+                    bail!(
+                        "registries.{}.token cannot be set through --config for security reasons",
+                        k
+                    );
+                }
+
                 CV::from_toml(Definition::Cli, toml_v)
-                    .with_context(|| format!("failed to convert --config argument `{}`", arg))?
+                    .with_context(|| format!("failed to convert --config argument `{arg}`"))?
             };
-            let mut seen = HashSet::new();
             let tmp_table = self
-                .load_includes(tmp_table, &mut seen)
+                .load_includes(tmp_table, &mut HashSet::new())
                 .with_context(|| "failed to load --config include".to_string())?;
             loaded_args
                 .merge(tmp_table, true)
-                .with_context(|| format!("failed to merge --config argument `{}`", arg))?;
+                .with_context(|| format!("failed to merge --config argument `{arg}`"))?;
         }
         Ok(loaded_args)
     }
@@ -1357,8 +1441,7 @@ impl Config {
 
             if let Some(token) = value_map.remove("token") {
                 if let Vacant(entry) = value_map.entry("registry".into()) {
-                    let mut map = HashMap::new();
-                    map.insert("token".into(), token);
+                    let map = HashMap::from([("token".into(), token)]);
                     let table = CV::Table(map, def.clone());
                     entry.insert(table);
                 }
@@ -1932,8 +2015,7 @@ pub fn save_credentials(
 
     // Move the old token location to the new one.
     if let Some(token) = toml.as_table_mut().unwrap().remove("token") {
-        let mut map = HashMap::new();
-        map.insert("token".to_string(), token);
+        let map = HashMap::from([("token".to_string(), token)]);
         toml.as_table_mut()
             .unwrap()
             .insert("registry".into(), map.into());
@@ -1944,13 +2026,11 @@ pub fn save_credentials(
         let (key, mut value) = {
             let key = "token".to_string();
             let value = ConfigValue::String(token, Definition::Path(file.path().to_path_buf()));
-            let mut map = HashMap::new();
-            map.insert(key, value);
+            let map = HashMap::from([(key, value)]);
             let table = CV::Table(map, Definition::Path(file.path().to_path_buf()));
 
             if let Some(registry) = registry {
-                let mut map = HashMap::new();
-                map.insert(registry.to_string(), table);
+                let map = HashMap::from([(registry.to_string(), table)]);
                 (
                     "registries".into(),
                     CV::Table(map, Definition::Path(file.path().to_path_buf())),
@@ -2109,12 +2189,13 @@ pub struct CargoNetConfig {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct CargoBuildConfig {
+    // deprecated, but preserved for compatibility
     pub pipelining: Option<bool>,
     pub dep_info_basedir: Option<ConfigRelativePath>,
     pub target_dir: Option<ConfigRelativePath>,
     pub incremental: Option<bool>,
-    pub target: Option<ConfigRelativePath>,
-    pub jobs: Option<u32>,
+    pub target: Option<BuildTargetConfig>,
+    pub jobs: Option<i32>,
     pub rustflags: Option<StringList>,
     pub rustdocflags: Option<StringList>,
     pub rustc_wrapper: Option<ConfigRelativePath>,
@@ -2124,9 +2205,59 @@ pub struct CargoBuildConfig {
     pub out_dir: Option<ConfigRelativePath>,
 }
 
+/// Configuration for `build.target`.
+///
+/// Accepts in the following forms:
+///
+/// ```toml
+/// target = "a"
+/// target = ["a"]
+/// target = ["a", "b"]
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+pub struct BuildTargetConfig {
+    inner: Value<BuildTargetConfigInner>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BuildTargetConfigInner {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl BuildTargetConfig {
+    /// Gets values of `build.target` as a list of strings.
+    pub fn values(&self, config: &Config) -> CargoResult<Vec<String>> {
+        let map = |s: &String| {
+            if s.ends_with(".json") {
+                // Path to a target specification file (in JSON).
+                // <https://doc.rust-lang.org/rustc/targets/custom.html>
+                self.inner
+                    .definition
+                    .root(config)
+                    .join(s)
+                    .to_str()
+                    .expect("must be utf-8 in toml")
+                    .to_string()
+            } else {
+                // A string. Probably a target triple.
+                s.to_string()
+            }
+        };
+        let values = match &self.inner.val {
+            BuildTargetConfigInner::One(s) => vec![map(s)],
+            BuildTargetConfigInner::Many(v) => v.iter().map(map).collect(),
+        };
+        Ok(values)
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct TermConfig {
     verbose: Option<bool>,
+    quiet: Option<bool>,
     color: Option<String>,
     #[serde(default)]
     #[serde(deserialize_with = "progress_or_string")]

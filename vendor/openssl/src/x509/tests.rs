@@ -1,21 +1,29 @@
+use std::cmp::Ordering;
+
 use crate::asn1::Asn1Time;
 use crate::bn::{BigNum, MsbOption};
 use crate::hash::MessageDigest;
 use crate::nid::Nid;
 use crate::pkey::{PKey, Private};
 use crate::rsa::Rsa;
+#[cfg(not(boringssl))]
+use crate::ssl::SslFiletype;
 use crate::stack::Stack;
 use crate::x509::extension::{
     AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
     SubjectKeyIdentifier,
 };
+#[cfg(not(boringssl))]
+use crate::x509::store::X509Lookup;
 use crate::x509::store::X509StoreBuilder;
 #[cfg(any(ossl102, libressl261))]
-use crate::x509::verify::X509VerifyFlags;
+use crate::x509::verify::{X509VerifyFlags, X509VerifyParam};
 #[cfg(ossl110)]
 use crate::x509::X509Builder;
 use crate::x509::{X509Name, X509Req, X509StoreContext, X509VerifyResult, X509};
 use hex::{self, FromHex};
+#[cfg(any(ossl102, libressl261))]
+use libc::time_t;
 
 fn pkey() -> PKey<Private> {
     let rsa = Rsa::generate(2048).unwrap();
@@ -39,6 +47,9 @@ fn test_debug() {
     let cert = include_bytes!("../../test/cert.pem");
     let cert = X509::from_pem(cert).unwrap();
     let debugged = format!("{:#?}", cert);
+    #[cfg(boringssl)]
+    assert!(debugged.contains(r#"serial_number: "8771f7bdee982fa5""#));
+    #[cfg(not(boringssl))]
     assert!(debugged.contains(r#"serial_number: "8771F7BDEE982FA5""#));
     assert!(debugged.contains(r#"signature_algorithm: sha256WithRSAEncryption"#));
     assert!(debugged.contains(r#"countryName = "AU""#));
@@ -280,7 +291,7 @@ fn x509_req_builder() {
     let name = name.build();
 
     let mut builder = X509Req::builder().unwrap();
-    builder.set_version(2).unwrap();
+    builder.set_version(0).unwrap();
     builder.set_subject_name(&name).unwrap();
     builder.set_pubkey(&pkey).unwrap();
 
@@ -452,4 +463,233 @@ fn x509_ref_version_no_version_set() {
         0, actual_version,
         "Default certificate version is incorrect",
     );
+}
+
+#[test]
+fn test_save_subject_der() {
+    let cert = include_bytes!("../../test/cert.pem");
+    let cert = X509::from_pem(cert).unwrap();
+
+    let der = cert.subject_name().to_der().unwrap();
+    println!("der: {:?}", der);
+    assert!(!der.is_empty());
+}
+
+#[test]
+fn test_load_subject_der() {
+    // The subject from ../../test/cert.pem
+    const SUBJECT_DER: &[u8] = &[
+        48, 90, 49, 11, 48, 9, 6, 3, 85, 4, 6, 19, 2, 65, 85, 49, 19, 48, 17, 6, 3, 85, 4, 8, 12,
+        10, 83, 111, 109, 101, 45, 83, 116, 97, 116, 101, 49, 33, 48, 31, 6, 3, 85, 4, 10, 12, 24,
+        73, 110, 116, 101, 114, 110, 101, 116, 32, 87, 105, 100, 103, 105, 116, 115, 32, 80, 116,
+        121, 32, 76, 116, 100, 49, 19, 48, 17, 6, 3, 85, 4, 3, 12, 10, 102, 111, 111, 98, 97, 114,
+        46, 99, 111, 109,
+    ];
+    X509Name::from_der(SUBJECT_DER).unwrap();
+}
+
+#[test]
+fn test_convert_to_text() {
+    let cert = include_bytes!("../../test/cert.pem");
+    let cert = X509::from_pem(cert).unwrap();
+
+    const SUBSTRINGS: &[&str] = &[
+        "Certificate:\n",
+        "Serial Number:",
+        "Signature Algorithm:",
+        "Issuer: C=AU, ST=Some-State, O=Internet Widgits Pty Ltd\n",
+        "Subject: C=AU, ST=Some-State, O=Internet Widgits Pty Ltd, CN=foobar.com\n",
+        "Subject Public Key Info:",
+    ];
+
+    let text = String::from_utf8(cert.to_text().unwrap()).unwrap();
+
+    for substring in SUBSTRINGS {
+        assert!(
+            text.contains(substring),
+            "{:?} not found inside {}",
+            substring,
+            text
+        );
+    }
+}
+
+#[test]
+fn test_convert_req_to_text() {
+    let csr = include_bytes!("../../test/csr.pem");
+    let csr = X509Req::from_pem(csr).unwrap();
+
+    const SUBSTRINGS: &[&str] = &[
+        "Certificate Request:\n",
+        "Version:",
+        "Subject: C=AU, ST=Some-State, O=Internet Widgits Pty Ltd, CN=foobar.com\n",
+        "Subject Public Key Info:",
+        "Signature Algorithm:",
+    ];
+
+    let text = String::from_utf8(csr.to_text().unwrap()).unwrap();
+
+    for substring in SUBSTRINGS {
+        assert!(
+            text.contains(substring),
+            "{:?} not found inside {}",
+            substring,
+            text
+        );
+    }
+}
+
+#[test]
+fn test_name_cmp() {
+    let cert = include_bytes!("../../test/cert.pem");
+    let cert = X509::from_pem(cert).unwrap();
+
+    let subject = cert.subject_name();
+    let issuer = cert.issuer_name();
+    assert_eq!(Ordering::Equal, subject.try_cmp(subject).unwrap());
+    assert_eq!(Ordering::Greater, subject.try_cmp(issuer).unwrap());
+}
+
+#[test]
+#[cfg(any(ossl102, libressl261))]
+fn test_verify_param_set_time_fails_verification() {
+    const TEST_T_2030: time_t = 1893456000;
+
+    let cert = include_bytes!("../../test/cert.pem");
+    let cert = X509::from_pem(cert).unwrap();
+    let ca = include_bytes!("../../test/root-ca.pem");
+    let ca = X509::from_pem(ca).unwrap();
+    let chain = Stack::new().unwrap();
+
+    let mut store_bldr = X509StoreBuilder::new().unwrap();
+    store_bldr.add_cert(ca).unwrap();
+    let mut verify_params = X509VerifyParam::new().unwrap();
+    verify_params.set_time(TEST_T_2030);
+    store_bldr.set_param(&verify_params).unwrap();
+    let store = store_bldr.build();
+
+    let mut context = X509StoreContext::new().unwrap();
+    assert_eq!(
+        context
+            .init(&store, &cert, &chain, |c| {
+                c.verify_cert()?;
+                Ok(c.error())
+            })
+            .unwrap()
+            .error_string(),
+        "certificate has expired"
+    )
+}
+
+#[test]
+#[cfg(any(ossl102, libressl261))]
+fn test_verify_param_set_time() {
+    const TEST_T_2020: time_t = 1577836800;
+
+    let cert = include_bytes!("../../test/cert.pem");
+    let cert = X509::from_pem(cert).unwrap();
+    let ca = include_bytes!("../../test/root-ca.pem");
+    let ca = X509::from_pem(ca).unwrap();
+    let chain = Stack::new().unwrap();
+
+    let mut store_bldr = X509StoreBuilder::new().unwrap();
+    store_bldr.add_cert(ca).unwrap();
+    let mut verify_params = X509VerifyParam::new().unwrap();
+    verify_params.set_time(TEST_T_2020);
+    store_bldr.set_param(&verify_params).unwrap();
+    let store = store_bldr.build();
+
+    let mut context = X509StoreContext::new().unwrap();
+    assert!(context
+        .init(&store, &cert, &chain, |c| c.verify_cert())
+        .unwrap());
+}
+
+#[test]
+#[cfg(any(ossl102, libressl261))]
+fn test_verify_param_set_depth() {
+    let cert = include_bytes!("../../test/leaf.pem");
+    let cert = X509::from_pem(cert).unwrap();
+    let intermediate_ca = include_bytes!("../../test/intermediate-ca.pem");
+    let intermediate_ca = X509::from_pem(intermediate_ca).unwrap();
+    let ca = include_bytes!("../../test/root-ca.pem");
+    let ca = X509::from_pem(ca).unwrap();
+    let mut chain = Stack::new().unwrap();
+    chain.push(intermediate_ca).unwrap();
+
+    let mut store_bldr = X509StoreBuilder::new().unwrap();
+    store_bldr.add_cert(ca).unwrap();
+    let mut verify_params = X509VerifyParam::new().unwrap();
+    // OpenSSL 1.1.0+ considers the root certificate to not be part of the chain, while 1.0.2 and LibreSSL do
+    let expected_depth = if cfg!(any(ossl110)) { 1 } else { 2 };
+    verify_params.set_depth(expected_depth);
+    store_bldr.set_param(&verify_params).unwrap();
+    let store = store_bldr.build();
+
+    let mut context = X509StoreContext::new().unwrap();
+    assert!(context
+        .init(&store, &cert, &chain, |c| c.verify_cert())
+        .unwrap());
+}
+
+#[test]
+#[cfg(any(ossl102, libressl261))]
+#[allow(clippy::bool_to_int_with_if)]
+fn test_verify_param_set_depth_fails_verification() {
+    let cert = include_bytes!("../../test/leaf.pem");
+    let cert = X509::from_pem(cert).unwrap();
+    let intermediate_ca = include_bytes!("../../test/intermediate-ca.pem");
+    let intermediate_ca = X509::from_pem(intermediate_ca).unwrap();
+    let ca = include_bytes!("../../test/root-ca.pem");
+    let ca = X509::from_pem(ca).unwrap();
+    let mut chain = Stack::new().unwrap();
+    chain.push(intermediate_ca).unwrap();
+
+    let mut store_bldr = X509StoreBuilder::new().unwrap();
+    store_bldr.add_cert(ca).unwrap();
+    let mut verify_params = X509VerifyParam::new().unwrap();
+    // OpenSSL 1.1.0+ considers the root certificate to not be part of the chain, while 1.0.2 and LibreSSL do
+    let expected_depth = if cfg!(any(ossl110)) { 0 } else { 1 };
+    verify_params.set_depth(expected_depth);
+    store_bldr.set_param(&verify_params).unwrap();
+    let store = store_bldr.build();
+
+    // OpenSSL 1.1.0+ added support for X509_V_ERR_CERT_CHAIN_TOO_LONG, while 1.0.2 simply ignores the intermediate
+    let expected_error = if cfg!(any(ossl110, libressl261)) {
+        "certificate chain too long"
+    } else {
+        "unable to get local issuer certificate"
+    };
+
+    let mut context = X509StoreContext::new().unwrap();
+    assert_eq!(
+        context
+            .init(&store, &cert, &chain, |c| {
+                c.verify_cert()?;
+                Ok(c.error())
+            })
+            .unwrap()
+            .error_string(),
+        expected_error
+    )
+}
+
+#[test]
+#[cfg(not(boringssl))]
+fn test_load_cert_file() {
+    let cert = include_bytes!("../../test/cert.pem");
+    let cert = X509::from_pem(cert).unwrap();
+    let chain = Stack::new().unwrap();
+
+    let mut store_bldr = X509StoreBuilder::new().unwrap();
+    let lookup = store_bldr.add_lookup(X509Lookup::file()).unwrap();
+    lookup
+        .load_cert_file("test/root-ca.pem", SslFiletype::PEM)
+        .unwrap();
+    let store = store_bldr.build();
+
+    let mut context = X509StoreContext::new().unwrap();
+    assert!(context
+        .init(&store, &cert, &chain, |c| c.verify_cert())
+        .unwrap());
 }

@@ -12,32 +12,25 @@ use std::str::FromStr;
 pub fn cli() -> App {
     subcommand("tree")
         .about("Display a tree visualization of a dependency graph")
-        .arg(opt("quiet", "Suppress status messages").short("q"))
+        .arg_quiet()
         .arg_manifest_path()
         .arg_package_spec_no_all(
             "Package to be used as the root of the tree",
             "Display the tree for all packages in the workspace",
             "Exclude specific workspace members",
         )
-        // Deprecated, use --no-dedupe instead.
-        .arg(Arg::with_name("all").long("all").short("a").hidden(true))
-        // Deprecated, use --target=all instead.
         .arg(
-            Arg::with_name("all-targets")
-                .long("all-targets")
-                .hidden(true),
+            flag("all", "Deprecated, use --no-dedupe instead")
+                .short('a')
+                .hide(true),
         )
+        .arg(flag("all-targets", "Deprecated, use --target=all instead").hide(true))
         .arg_features()
         .arg_target_triple(
             "Filter dependencies matching the given target-triple (default host platform). \
             Pass `all` to include all targets.",
         )
-        // Deprecated, use -e=no-dev instead.
-        .arg(
-            Arg::with_name("no-dev-dependencies")
-                .long("no-dev-dependencies")
-                .hidden(true),
-        )
+        .arg(flag("no-dev-dependencies", "Deprecated, use -e=no-dev instead").hide(true))
         .arg(
             multi_opt(
                 "edges",
@@ -46,7 +39,7 @@ pub fn cli() -> App {
                  (features, normal, build, dev, all, \
                  no-normal, no-build, no-dev, no-proc-macro)",
             )
-            .short("e"),
+            .short('e'),
         )
         .arg(
             optional_multi_opt(
@@ -54,7 +47,7 @@ pub fn cli() -> App {
                 "SPEC",
                 "Invert the tree direction and focus on the given package",
             )
-            .short("i"),
+            .short('i'),
         )
         .arg(multi_opt(
             "prune",
@@ -62,81 +55,74 @@ pub fn cli() -> App {
             "Prune the given package from the display of the dependency tree",
         ))
         .arg(opt("depth", "Maximum display depth of the dependency tree").value_name("DEPTH"))
-        // Deprecated, use --prefix=none instead.
-        .arg(Arg::with_name("no-indent").long("no-indent").hidden(true))
-        // Deprecated, use --prefix=depth instead.
-        .arg(
-            Arg::with_name("prefix-depth")
-                .long("prefix-depth")
-                .hidden(true),
-        )
+        .arg(flag("no-indent", "Deprecated, use --prefix=none instead").hide(true))
+        .arg(flag("prefix-depth", "Deprecated, use --prefix=depth instead").hide(true))
         .arg(
             opt(
                 "prefix",
                 "Change the prefix (indentation) of how each entry is displayed",
             )
             .value_name("PREFIX")
-            .possible_values(&["depth", "indent", "none"])
+            .value_parser(["depth", "indent", "none"])
             .default_value("indent"),
         )
-        .arg(opt(
+        .arg(flag(
             "no-dedupe",
             "Do not de-duplicate (repeats all shared dependencies)",
         ))
         .arg(
-            opt(
+            flag(
                 "duplicates",
                 "Show only dependencies which come in multiple versions (implies -i)",
             )
-            .short("d")
+            .short('d')
             .alias("duplicate"),
         )
         .arg(
             opt("charset", "Character set to use in output: utf8, ascii")
                 .value_name("CHARSET")
-                .possible_values(&["utf8", "ascii"])
+                .value_parser(["utf8", "ascii"])
                 .default_value("utf8"),
         )
         .arg(
             opt("format", "Format string used for printing dependencies")
                 .value_name("FORMAT")
-                .short("f")
+                .short('f')
                 .default_value("{p}"),
         )
         .arg(
             // Backwards compatibility with old cargo-tree.
-            Arg::with_name("version")
-                .long("version")
-                .short("V")
-                .hidden(true),
+            flag("version", "Print version info and exit")
+                .short('V')
+                .hide(true),
         )
         .after_help("Run `cargo help tree` for more detailed information.\n")
 }
 
-pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
-    if args.is_present("version") {
-        let verbose = args.occurrences_of("verbose") > 0;
+pub fn exec(config: &mut Config, args: &ArgMatches) -> CliResult {
+    if args.flag("version") {
+        let verbose = args.verbose() > 0;
         let version = cli::get_version_string(verbose);
         cargo::drop_print!(config, "{}", version);
         return Ok(());
     }
-    let prefix = if args.is_present("no-indent") {
+    let prefix = if args.flag("no-indent") {
         config
             .shell()
             .warn("the --no-indent flag has been changed to --prefix=none")?;
         "none"
-    } else if args.is_present("prefix-depth") {
+    } else if args.flag("prefix-depth") {
         config
             .shell()
             .warn("the --prefix-depth flag has been changed to --prefix=depth")?;
         "depth"
     } else {
-        args.value_of("prefix").unwrap()
+        args.get_one::<String>("prefix").unwrap().as_str()
     };
     let prefix = tree::Prefix::from_str(prefix).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let no_dedupe = args.is_present("no-dedupe") || args.is_present("all");
-    if args.is_present("all") {
+    let no_dedupe = args.flag("no-dedupe") || args.flag("all");
+    if args.flag("all") {
         config.shell().warn(
             "The `cargo tree` --all flag has been changed to --no-dedupe, \
              and may be removed in a future version.\n\
@@ -144,7 +130,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
         )?;
     }
 
-    let targets = if args.is_present("all-targets") {
+    let targets = if args.flag("all-targets") {
         config
             .shell()
             .warn("the --all-targets flag has been changed to --target=all")?;
@@ -161,7 +147,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
 
     let packages = args.packages_from_flags()?;
     let mut invert = args
-        .values_of("invert")
+        .get_many::<String>("invert")
         .map_or_else(|| Vec::new(), |is| is.map(|s| s.to_string()).collect());
     if args.is_present_with_zero_values("invert") {
         match &packages {
@@ -196,7 +182,7 @@ subtree of the package given to -p.\n\
         print_available_packages(&ws)?;
     }
 
-    let charset = tree::Charset::from_str(args.value_of("charset").unwrap())
+    let charset = tree::Charset::from_str(args.get_one::<String>("charset").unwrap())
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let opts = tree::TreeOptions {
         cli_features: args.cli_features()?,
@@ -207,9 +193,9 @@ subtree of the package given to -p.\n\
         pkgs_to_prune,
         prefix,
         no_dedupe,
-        duplicates: args.is_present("duplicates"),
+        duplicates: args.flag("duplicates"),
         charset,
-        format: args.value_of("format").unwrap().to_string(),
+        format: args.get_one::<String>("format").cloned().unwrap(),
         graph_features,
         max_display_depth: args.value_of_u32("depth")?.unwrap_or(u32::MAX),
         no_proc_macro,
@@ -226,13 +212,10 @@ subtree of the package given to -p.\n\
 /// Parses `--edges` option.
 ///
 /// Returns a tuple of `EdgeKind` map and `no_proc_marco` flag.
-fn parse_edge_kinds(
-    config: &Config,
-    args: &ArgMatches<'_>,
-) -> CargoResult<(HashSet<EdgeKind>, bool)> {
+fn parse_edge_kinds(config: &Config, args: &ArgMatches) -> CargoResult<(HashSet<EdgeKind>, bool)> {
     let (kinds, no_proc_macro) = {
         let mut no_proc_macro = false;
-        let mut kinds = args.values_of("edges").map_or_else(
+        let mut kinds = args.get_many::<String>("edges").map_or_else(
             || Vec::new(),
             |es| {
                 es.flat_map(|e| e.split(','))
@@ -244,7 +227,7 @@ fn parse_edge_kinds(
             },
         );
 
-        if args.is_present("no-dev-dependencies") {
+        if args.flag("no-dev-dependencies") {
             config
                 .shell()
                 .warn("the --no-dev-dependencies flag has changed to -e=no-dev")?;

@@ -7,11 +7,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fmt::Write;
 use std::rc::Rc;
+use std::task::Poll;
 use std::time::Instant;
 
 use cargo::core::dependency::DepKind;
 use cargo::core::resolver::{self, ResolveOpts, VersionPreferences};
-use cargo::core::source::{GitReference, SourceId};
+use cargo::core::source::{GitReference, QueryKind, SourceId};
 use cargo::core::Resolve;
 use cargo::core::{Dependency, PackageId, Registry, Summary};
 use cargo::util::{CargoResult, Config, Graph, IntoUrl};
@@ -127,16 +128,20 @@ pub fn resolve_with_config_raw(
         fn query(
             &mut self,
             dep: &Dependency,
+            kind: QueryKind,
             f: &mut dyn FnMut(Summary),
-            fuzzy: bool,
-        ) -> CargoResult<()> {
+        ) -> Poll<CargoResult<()>> {
             for summary in self.list.iter() {
-                if fuzzy || dep.matches(summary) {
+                let matched = match kind {
+                    QueryKind::Exact => dep.matches(summary),
+                    QueryKind::Fuzzy => true,
+                };
+                if matched {
                     self.used.insert(summary.package_id());
                     f(summary.clone());
                 }
             }
-            Ok(())
+            Poll::Ready(Ok(()))
         }
 
         fn describe_source(&self, _src: SourceId) -> String {
@@ -145,6 +150,10 @@ pub fn resolve_with_config_raw(
 
         fn is_replaced(&self, _src: SourceId) -> bool {
             false
+        }
+
+        fn block_until_ready(&mut self) -> CargoResult<()> {
+            Ok(())
         }
     }
     impl<'a> Drop for MyRegistry<'a> {

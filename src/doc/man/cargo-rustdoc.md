@@ -1,5 +1,6 @@
 # cargo-rustdoc(1)
 {{*set actionverb="Document"}}
+{{*set multitarget=true}}
 
 ## NAME
 
@@ -62,7 +63,11 @@ if its name is the same as the lib target. Binaries are skipped if they have
 
 {{> options-release }}
 
+{{> options-profile }}
+
 {{> options-ignore-rust-version }}
+
+{{> options-timings }}
 
 {{/options}}
 
@@ -94,9 +99,8 @@ if its name is the same as the lib target. Binaries are skipped if they have
 
 {{#options}}
 {{> options-jobs }}
+{{> options-keep-going }}
 {{/options}}
-
-{{> section-profiles }}
 
 {{> section-environment }}
 
